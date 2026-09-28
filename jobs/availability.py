@@ -547,18 +547,20 @@ def store_all(registry, series, results, stash, started) -> dict:
         if any(c.startswith("❌") for c in checks):
             rep["error"] = "read-back mismatch"
     except Exception as exc:  # noqa: BLE001 — reported in the summary and fails the job
-        rep["error"] = f"{exc.__class__.__name__}: {str(exc)[:500]}"
+        from db.store import redact
+        rep["error"] = redact(f"{exc.__class__.__name__}: {str(exc)[:500]}")
         target = rep.get("target") or ""
         if ".supabase.co" in target and target.split("@ ")[-1].startswith("db."):
             rep["error"] += (" — hint: Supabase's direct host (db.<ref>.supabase.co) is IPv6-only and GitHub runners "
                              "have no IPv6; use the Session pooler connection string (…pooler.supabase.com:5432).")
-        traceback.print_exc()
+        print(redact(traceback.format_exc()), file=sys.stderr)
     return rep
 
 
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except Exception:  # pragma: no cover
-        traceback.print_exc()
+    except Exception:  # pragma: no cover — never let a traceback print credentials
+        from db.store import redact
+        print(redact(traceback.format_exc()), file=sys.stderr)
         sys.exit(1)

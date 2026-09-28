@@ -172,6 +172,43 @@ def test_json_columns(eng):
                                          "depth": [{"side": "bid", "bucket": 1.0}]}], eng)
 
 
-def test_committed_migration_matches_schema():
-    committed = (ROOT / "db" / "migrations" / "001_init.sql").read_text()
-    assert committed == schema.postgres_ddl(), "run: python -m db.schema > db/migrations/001_init.sql"
+def test_committed_migrations_match_schema():
+    for name in schema.MIGRATION_TABLES:
+        committed = (ROOT / "db" / "migrations" / name).read_text()
+        assert committed == schema.postgres_ddl(name), f"run: python -m db.schema {name} > db/migrations/{name}"
+
+
+def test_every_table_is_in_exactly_one_migration():
+    listed = [t for names in schema.MIGRATION_TABLES.values() for t in names]
+    assert sorted(listed) == sorted(schema.metadata.tables), "add new tables to a new migration in MIGRATION_TABLES"
+
+
+# ───────────────────────────── credentials ─────────────────────────────
+
+RAW = "postgresql://postgres.abcref:p@ss:w]rd#1@aws-0-eu-central-1.pooler.supabase.com:5432/postgres"
+
+
+def test_database_url_with_unencoded_special_characters():
+    from db.store import parse_database_url
+    u = parse_database_url(RAW)
+    assert (u.username, u.password, u.host, u.port, u.database) == (
+        "postgres.abcref", "p@ss:w]rd#1", "aws-0-eu-central-1.pooler.supabase.com", 5432, "postgres")
+    assert u.drivername == "postgresql+psycopg"
+    enc = parse_database_url("postgres://u:p%40ss@h:6543/db?sslmode=require")
+    assert enc.password == "p@ss" and enc.port == 6543 and enc.query["sslmode"] == "require"
+
+
+def test_redaction_removes_every_credential_fragment():
+    from db.store import redact
+    leaked = "failed to resolve host 'w]rd#1@aws-0...' for p@ss:w]rd#1 and ss:w]rd#1 in " + RAW
+    out = redact(leaked, RAW)
+    for frag in ("p@ss:w]rd#1", "w]rd#1", "postgres.abcref", RAW):
+        assert frag not in out
+
+
+def test_describe_target_never_shows_credentials():
+    from db.store import describe_target, parse_database_url
+    from sqlalchemy import create_engine
+    eng = create_engine(parse_database_url(RAW), connect_args={"prepare_threshold": None})
+    t = describe_target(eng)
+    assert "w]rd" not in t and "abcref" not in t and t.startswith("postgresql @ aws-0-eu-central-1")
