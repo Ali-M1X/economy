@@ -1,0 +1,16 @@
+# Tracked economic releases. Dates come from FRED's release-dates API (derived from the
+# representative FRED series) and from the official BLS release calendar (ICS). FRED gives dates
+# only, so the publication time (US/Eastern wall-clock, as published by the agency) is stored here.
+releases:
+  - {id: cpi, name_en: "Consumer Price Index", name_fa: "شاخص قیمت مصرف‌کننده (CPI)", fred_series: CPIAUCSL, bls_title: "Consumer Price Index", time_et: "08:30", importance: 5, series_keys: [cpi, core_cpi]}
+  - {id: nfp, name_en: "Employment Situation (NFP)", name_fa: "گزارش اشتغال (NFP)", fred_series: PAYEMS, bls_title: "Employment Situation", time_et: "08:30", importance: 5, series_keys: [nonfarm_payrolls, unemployment_rate, avg_hourly_earnings]}
+  - {id: pce, name_en: "Personal Income and Outlays (PCE)", name_fa: "درآمد و مخارج شخصی (PCE)", fred_series: PCEPI, time_et: "08:30", importance: 5, series_keys: [pce, core_pce]}
+  - {id: ppi, name_en: "Producer Price Index", name_fa: "شاخص قیمت تولیدکننده (PPI)", fred_series: PPIFIS, bls_title: "Producer Price Index", time_et: "08:30", importance: 4, series_keys: [ppi_final_demand]}
+  - {id: jolts, name_en: "JOLTS", name_fa: "فرصت‌های شغلی (JOLTS)", fred_series: JTSJOL, bls_title: "Job Openings and Labor Turnover Survey", time_et: "10:00", importance: 4, series_keys: [jolts_openings]}
+  - {id: claims, name_en: "Initial Jobless Claims", name_fa: "مدعیان بیمه بیکاری", fred_series: ICSA, time_et: "08:30", importance: 3, series_keys: [initial_claims, continuing_claims]}
+  - {id: gdp, name_en: "GDP", name_fa: "تولید ناخالص داخلی (GDP)", fred_series: GDP, time_et: "08:30", importance: 4, series_keys: []}
+  - {id: h41, name_en: "Fed H.4.1 (balance sheet)", name_fa: "ترازنامه هفتگی فدرال (H.4.1)", fred_series: WALCL, time_et: "16:30", importance: 3, series_keys: [fed_balance_sheet, tga_weekly]}
+  - {id: m2, name_en: "Money Stock (H.6)", name_fa: "حجم پول (H.6)", fred_series: M2SL, time_et: "13:00", importance: 3, series_keys: [m2]}
+  - {id: philly, name_en: "Philly Fed Manufacturing Survey", name_fa: "نظرسنجی تولیدی فیلادلفیا", fred_series: GACDFSA066MSFRBPHI, time_et: "08:30", importance: 3, series_keys: [philly_fed_activity]}
+  - {id: empire, name_en: "Empire State Manufacturing Survey", name_fa: "نظرسنجی تولیدی نیویورک", fred_series: GACDINA066MNFRBNY, time_et: "08:30", importance: 3, series_keys: [empire_state_activity]}
+  - {id: fomc, name_en: "FOMC rate decision", name_fa: "تصمیم نرخ بهره فدرال (FOMC)", time_et: "14:00", importance: 5, series_keys: [fed_target_upper, fed_target_lower]}

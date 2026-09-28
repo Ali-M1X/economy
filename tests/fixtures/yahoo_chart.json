@@ -1,0 +1,3 @@
+{"chart":{"result":[{"meta":{"currency":"USD","symbol":"GC=F","exchangeTimezoneName":"America/New_York","regularMarketPrice":3712.4,"regularMarketTime":1790280000},
+ "timestamp":[1790049600,1790136000,1790222400],
+ "indicators":{"quote":[{"open":[3700,3705,3710],"high":[3710,3712,3720],"low":[3690,3700,3705],"close":[3705.1,null,3712.4],"volume":[1000,1100,900]}]}}],"error":null}}

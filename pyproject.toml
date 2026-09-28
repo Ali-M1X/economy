@@ -1,0 +1,13 @@
+[project]
+name = "macro-pulse"
+version = "0.1.0"
+description = "US macro → Bitcoin & Gold impact engine"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["live: hits real network sources (run in CI only)"]
+addopts = "-m 'not live'"
+
+[tool.ruff]
+line-length = 120

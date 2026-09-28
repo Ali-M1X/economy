@@ -1,0 +1,10 @@
+pandas>=2.2,<4
+numpy>=1.26
+requests>=2.32
+urllib3>=2.2
+SQLAlchemy>=2.0,<3
+psycopg[binary]>=3.2
+PyYAML>=6.0
+beautifulsoup4>=4.12
+websockets>=13
+python-dotenv>=1.0

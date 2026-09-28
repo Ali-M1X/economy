@@ -1,0 +1,28 @@
+name: data-availability
+# Runs every collector against the live sources and publishes the Data Availability Report
+# (job summary + artifact). Also the manual "is everything still working?" check.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths: ["collectors/**", "config/**", "jobs/availability.py", "core/**", ".github/workflows/data-availability.yml"]
+concurrency: {group: data-availability, cancel-in-progress: true}
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+      BLS_API_KEY: ${{ secrets.BLS_API_KEY }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r requirements.txt
+      - name: Collect + validate
+        run: |
+          if [ -n "$DATABASE_URL" ]; then python -m jobs.availability --store; else python -m jobs.availability; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: data-availability, path: output/}
