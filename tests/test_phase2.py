@@ -231,3 +231,45 @@ def test_hmm_filtered_probabilities():
     assert h is not None and "in-sample" in h.note
     assert np.allclose(h.probs[list(regime.REGIMES)].sum(axis=1), 1.0)
     assert set(h.probs["regime"]) <= set(regime.REGIMES)
+
+
+def test_cache_round_trip_runs_features_without_database(tmp_path, monkeypatch):
+    from collectors.base import SeriesResult
+    from db import store
+    from jobs import availability, features as job
+
+    def no_db(*a, **k):
+        raise AssertionError("the cache path must not touch the database")
+    monkeypatch.setattr(job, "engine", no_db)
+    monkeypatch.setattr(store, "engine", no_db)
+
+    panel = _synthetic_panel()
+    d = pd.date_range("2024-01-01", "2026-09-28", freq="D")
+    data = {k: frame(panel.index, panel[k]) for k in panel}
+    data.update({"fed_funds_eff_daily": frame(d, np.where(d < "2026-09-17", 3.63, 3.88)),
+                 "fed_target_upper": frame(d, np.where(d < "2026-09-17", 3.75, 4.00)),
+                 "fed_target_lower": frame(d, np.where(d < "2026-09-17", 3.50, 3.75)),
+                 "spread_10y_2y": frame(d, np.linspace(-0.5, 0.36, len(d)))})
+    results = {k: SeriesResult(k, v, "u") for k, v in data.items()}
+    vint = {"core_cpi": pd.DataFrame({"date": pd.to_datetime(["2026-07-01", "2026-07-01"]), "value": [1.0, 1.1],
+                                      "realtime_start": pd.to_datetime(["2026-08-12", "2026-09-11"]),
+                                      "realtime_end": pd.to_datetime(["2026-09-10", pd.NaT])})}
+    fut = pd.DataFrame([{"contract": "ZQV26.CBT", "root": "ZQ", "contract_month": date(2026, 10, 1), "price": 96.105,
+                         "implied_rate": 3.895, "quote_ts": pd.Timestamp("2026-09-28", tz="UTC")},
+                        {"contract": "ZQX26.CBT", "root": "ZQ", "contract_month": date(2026, 11, 1), "price": 95.945,
+                         "implied_rate": 4.055, "quote_ts": pd.Timestamp("2026-09-28", tz="UTC")}])
+    stash = {"fut_ZQ": fut, "fomc": [{"decision_date": date(2026, 10, 28), "sep": False}]}
+    availability.write_cache(tmp_path, results, vint, stash)
+
+    data2, vint2, fq, cal, docs = job.load_cache(tmp_path)
+    assert set(data2) == set(data)
+    pd.testing.assert_frame_equal(data2["fed_funds_eff_daily"], data["fed_funds_eff_daily"])
+    assert vint2["core_cpi"]["realtime_end"].isna().iloc[-1]
+    res = job.compute_all(data2, vint2, fq, cal, docs, date(2026, 9, 28))
+    fw = res["fedwatch"]
+    assert fw.iloc[0].meeting == date(2026, 10, 28) and fw.iloc[0].p_hike == pytest.approx(0.70)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(job, "OUT_DIR", tmp_path / "out")
+    assert job.main(["--from-cache", str(tmp_path)]) == 0
+    assert (tmp_path / "out" / "features_summary.md").exists()

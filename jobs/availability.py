@@ -479,6 +479,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--store", action="store_true", help="upsert fetched data into DATABASE_URL")
     ap.add_argument("--only", nargs="*", help="limit to these series keys")
     ap.add_argument("--no-probes", action="store_true")
+    ap.add_argument("--cache-dir", help="also write fetched data to this directory (input for jobs.features --from-cache)")
     args = ap.parse_args(argv)
 
     started = utcnow()
@@ -491,6 +492,8 @@ def main(argv: list[str] | None = None) -> int:
     probes, stash = ([], {}) if args.no_probes else run_probes(results)
     stash["_vintages"] = vintages
 
+    if args.cache_dir:
+        write_cache(Path(args.cache_dir), results, vintages, stash)
     db_report = store_all(registry, series, results, stash, started) if args.store else None
 
     OUT_DIR.mkdir(exist_ok=True)
@@ -504,6 +507,24 @@ def main(argv: list[str] | None = None) -> int:
             fh.write(md)
     print(md)
     return 1 if db_report and db_report.get("error") else 0
+
+
+def write_cache(d: Path, results: dict[str, SeriesResult], vintages: dict[str, pd.DataFrame], stash: dict) -> None:
+    """Plain CSV snapshot of one run (no database needed): what the features job reads with --from-cache."""
+    d.mkdir(parents=True, exist_ok=True)
+    pd.concat([r.data.assign(series_key=k) for k, r in results.items() if not r.data.empty], ignore_index=True) \
+        .to_csv(d / "observations.csv.gz", index=False)
+    if vintages:
+        pd.concat([v.assign(series_key=k) for k, v in vintages.items()], ignore_index=True) \
+            .to_csv(d / "vintages.csv.gz", index=False)
+    fut = [stash[k] for k in ("fut_ZQ", "fut_SR3") if stash.get(k) is not None and not stash[k].empty]
+    if fut:
+        pd.concat(fut, ignore_index=True).to_csv(d / "futures_quotes.csv", index=False)
+    rel = next(r for r in calendar.tracked_releases() if r["id"] == "fomc")
+    ev = list(stash.get("calendar_fred", [])) + [calendar._event(rel, m["decision_date"], "federalreserve.gov")
+                                                 for m in stash.get("fomc", [])]
+    pd.DataFrame([{"event_id": e["event_id"], "release_id": e["release_id"], "scheduled_utc": e["scheduled_utc"]}
+                  for e in ev], columns=["event_id", "release_id", "scheduled_utc"]).to_csv(d / "calendar_events.csv", index=False)
 
 
 def store_all(registry, series, results, stash, started) -> dict:

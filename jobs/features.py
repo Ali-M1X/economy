@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
 import traceback
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
 
@@ -203,18 +205,45 @@ def render(res: dict, stored: dict | None) -> str:
     return "\n".join(L)
 
 
-def main() -> int:
-    eng = engine()
-    init_db(eng)
-    data = load_all_series(eng=eng)
-    if not data:
-        print("no observations in the database — run jobs.availability --store first")
-        return 1
-    reg = load_registry()
-    vintages = {k: load_vintages(k, eng) for k in REGIME_KEYS if k in reg and reg[k].vintages}
-    res = compute_all(data, vintages, load_table(schema.futures_quotes, eng), load_table(schema.calendar_events, eng),
-                      load_table(schema.fed_documents, eng), utcnow().date())
-    stored = store(res, eng)
+def load_cache(d: Path) -> tuple[dict, dict, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    obs = pd.read_csv(d / "observations.csv.gz", parse_dates=["date"])
+    data = {k: g[["date", "value"]].reset_index(drop=True) for k, g in obs.groupby("series_key")}
+    vintages = {}
+    if (d / "vintages.csv.gz").exists():
+        v = pd.read_csv(d / "vintages.csv.gz", parse_dates=["date", "realtime_start", "realtime_end"])
+        vintages = {k: g.drop(columns="series_key").reset_index(drop=True) for k, g in v.groupby("series_key")}
+    fq = pd.read_csv(d / "futures_quotes.csv", parse_dates=["quote_ts"]) if (d / "futures_quotes.csv").exists() else pd.DataFrame()
+    if not fq.empty:
+        fq["contract_month"] = pd.to_datetime(fq["contract_month"]).dt.date
+    cal = pd.read_csv(d / "calendar_events.csv")
+    cal["scheduled_utc"] = pd.to_datetime(cal["scheduled_utc"], utc=True)
+    return data, vintages, fq, cal, pd.DataFrame()
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--from-cache", help="read inputs from a jobs.availability --cache-dir snapshot (no database)")
+    ap.add_argument("--no-store", action="store_true", help="do not write results to the database")
+    args = ap.parse_args(argv)
+    today = utcnow().date()
+    eng = None
+    if args.from_cache:
+        data, vintages, fq, cal, docs = load_cache(Path(args.from_cache))
+    else:
+        eng = engine()
+        init_db(eng)
+        data = load_all_series(eng=eng)
+        if not data:
+            print("no observations in the database — run jobs.availability --store first")
+            return 1
+        reg = load_registry()
+        vintages = {k: load_vintages(k, eng) for k in REGIME_KEYS if k in reg and reg[k].vintages}
+        fq, cal, docs = (load_table(schema.futures_quotes, eng), load_table(schema.calendar_events, eng),
+                         load_table(schema.fed_documents, eng))
+    res = compute_all(data, vintages, fq, cal, docs, today)
+    stored = None
+    if not args.no_store and eng is not None:
+        stored = store(res, eng)
     md = render(res, stored)
     OUT_DIR.mkdir(exist_ok=True)
     (OUT_DIR / "features_summary.md").write_text(md, encoding="utf-8")

@@ -1,20 +1,25 @@
 name: data-availability
-# Runs every collector against the live sources and publishes the Data Availability Report
-# (job summary + artifact). Also the manual "is everything still working?" check.
+# Runs every collector against the live sources, publishes the Data Availability Report and the
+# Phase 2 features summary (job summary + artifact).
+#
+# Database storage is OFF unless the repository variable ENABLE_DB_STORAGE is "true"
+# (Settings → Secrets and variables → Actions → Variables). While it is off, DATABASE_URL is not even
+# passed to the job, and features are computed from this run's own snapshot (output/cache).
 on:
   workflow_dispatch:
   push:
     branches: ["claude/**"]
-    paths: ["collectors/**", "config/**", "jobs/availability.py", "core/**", "db/**", "validation/**", ".github/workflows/data-availability.yml"]
+    paths: ["collectors/**", "config/**", "jobs/**", "core/**", "db/**", "validation/**", "features/**", "models/**",
+            ".github/workflows/data-availability.yml"]
 concurrency: {group: data-availability, cancel-in-progress: true}
 jobs:
   report:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
       BLS_API_KEY: ${{ secrets.BLS_API_KEY }}
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DATABASE_URL: ${{ vars.ENABLE_DB_STORAGE == 'true' && secrets.DATABASE_URL || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,7 +27,12 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Collect + validate
         run: |
-          if [ -n "$DATABASE_URL" ]; then python -m jobs.availability --store; else python -m jobs.availability; fi
+          if [ -n "$DATABASE_URL" ]; then STORE=--store; else STORE=; echo "DB storage disabled (ENABLE_DB_STORAGE != true)"; fi
+          python -m jobs.availability --cache-dir output/cache $STORE
+      - name: Phase 2 features
+        if: success() || failure()
+        run: |
+          if [ -n "$DATABASE_URL" ]; then python -m jobs.features; else python -m jobs.features --from-cache output/cache; fi
       - uses: actions/upload-artifact@v4
         if: always()
         with: {name: data-availability, path: output/}
