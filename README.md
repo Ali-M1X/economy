@@ -2,7 +2,7 @@
 
 US macro, liquidity, rates, credit, dollar, intermarket and commodity data → measured impact on **Bitcoin** and **Gold**, with a Persian dashboard, causal reports and backtested trade signals.
 
-> Status: **Phase 2 done** — collectors + validation (Phase 1) and features, FedWatch, Fed Stance Score, curve inversions and regimes (Phase 2). See `DATA_GAPS.md`.
+> Status: **Phase 3 done** — collectors + validation (1); features, FedWatch, Fed Stance Score, curve inversions, regimes (2); impact coefficients, Macro Score and backtest engine (3). See `DATA_GAPS.md`.
 > A full Persian setup guide arrives in Phase 7.
 
 ## Layout
@@ -17,6 +17,10 @@ US macro, liquidity, rates, credit, dollar, intermarket and commodity data → m
 | `features/` | derived series, point-in-time loader, curve inversions, FedWatch, Fed Stance Score |
 | `models/regime.py` | Expansion / Peak / Recession / Recovery (rule-based, point-in-time) + comparison HMM |
 | `jobs/features.py` | Phase 2 pipeline (from the DB, or from a snapshot with `--from-cache`) |
+| `config/indicators.yaml` | indicators, change transforms, transmission channels and editable theory sign priors |
+| `models/events.py`, `models/impact.py` | point-in-time release surprises; event study / local projections / long horizon; 0–10 Impact Coefficient |
+| `jobs/impact.py` | Phase 3: coefficients for BTC & gold and the Macro Score (−100…+100) with contribution breakdown |
+| `backtest/engine.py` | trade simulator (fees, slippage, stop-first, 3-TP scale-out, walk-forward folds) used for win rates in Phase 4 |
 | `tests/` | offline tests against fixtures in each source's real format |
 
 ## Run

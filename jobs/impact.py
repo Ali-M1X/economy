@@ -163,12 +163,18 @@ def current_state(panel: pd.DataFrame, cfg: dict, periods: int) -> pd.Series:
     return pd.Series(out)
 
 
+SCORE_EVIDENCE_FLOOR = 30.0  # ≈ three full-strength (|coef| = 10) relationships
+
+
 def macro_score(coef: pd.Series, state: pd.Series) -> tuple[float | None, pd.DataFrame]:
+    """Score = 100 × Σ coefᵢ·stateᵢ / max(Σ|coefᵢ|, 30), stateᵢ ∈ [−1, 1].
+    The floor keeps uniformly weak evidence from producing a strong-looking score: with only weak
+    coefficients (e.g. gold's medium horizon, all |coef| < 1) the score stays near 0."""
     j = pd.concat([coef.rename("coef"), state.rename("state")], axis=1).dropna()
     j = j[j["coef"] != 0]
     if j.empty:
         return None, j
-    denom = j["coef"].abs().sum()
+    denom = max(j["coef"].abs().sum(), SCORE_EVIDENCE_FLOOR)
     j["contribution"] = 100 * j["coef"] * j["state"] / denom
     return round(float(j["contribution"].sum()), 1), j.sort_values("contribution", key=abs, ascending=False)
 
@@ -233,9 +239,34 @@ def render(coefs: pd.DataFrame, evs: pd.DataFrame, sc: dict, now: pd.Timestamp) 
     return "\n".join(L) + "\n"
 
 
+def store(coefs: pd.DataFrame, sc: dict, now: pd.Timestamp, eng=None) -> dict[str, int]:
+    """Append this run to the history tables (weekly recompute keeps a time series of coefficients)."""
+    from db import schema
+    from db.store import engine, init_db, upsert
+
+    eng = eng or engine()
+    init_db(eng)
+    day = now.date()
+    rows = [{"computed_on": day, "indicator": r.indicator, "asset": r.asset, "horizon": r.horizon, "sample": r.sample,
+             "bucket": r.bucket, "coefficient": float(r.coefficient),
+             "effect_per_sigma": None if pd.isna(r.beta) else float(r.beta),
+             "t_stat": None if pd.isna(r.t_stat) else float(r.t_stat),
+             "hit_rate": None if r.hit_rate is None or pd.isna(r.hit_rate) else float(r.hit_rate),
+             "n": int(r.n), "confidence": r.confidence,
+             "details": {"sd_ret": None if pd.isna(r.sd_ret) else float(r.sd_ret), "n_eff": float(r.n_eff),
+                         "theory": int(r.theory), "conflict": bool(r.conflict)}}
+            for r in coefs.itertuples()]
+    n1 = upsert(schema.impact_coefficients, rows, eng)
+    n2 = upsert(schema.macro_scores, [{"computed_at": now.to_pydatetime(), "asset": a, "bucket": b, "score": d["score"],
+                                       "contributions": d["top"], "note": d["note"]}
+                                      for a, buckets in sc.items() for b, d in buckets.items()], eng)
+    return {"impact_coefficients": n1, "macro_scores": n2}
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--from-cache", required=True, help="snapshot dir from jobs.availability --cache-dir")
+    ap.add_argument("--store", action="store_true", help="also write coefficients and scores to DATABASE_URL")
     args = ap.parse_args(argv)
     cache = Path(args.from_cache)
     now = pd.Timestamp(utcnow())
@@ -256,6 +287,8 @@ def main(argv: list[str] | None = None) -> int:
     OUT_DIR.mkdir(exist_ok=True)
     coefs.to_csv(OUT_DIR / "impact_coefficients.csv", index=False)
     (OUT_DIR / "macro_scores.json").write_text(json.dumps(sc, indent=1), encoding="utf-8")
+    if args.store:
+        print(f"stored: {store(coefs, sc, now)}")
     md = render(coefs, evs, sc, now)
     (OUT_DIR / "impact_summary.md").write_text(md, encoding="utf-8")
     if os.environ.get("GITHUB_STEP_SUMMARY"):

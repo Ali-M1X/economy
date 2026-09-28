@@ -112,8 +112,13 @@ def test_macro_score_breakdown():
     coef = pd.Series({"dxy": -8.0, "net_liquidity_weekly": 6.0, "vix": 0.0})
     state = pd.Series({"dxy": 0.5, "net_liquidity_weekly": -0.5, "vix": 1.0})
     sc, br = macro_score(coef, state)
-    assert sc == pytest.approx(100 * (-8 * 0.5 + 6 * -0.5) / 14, abs=0.1)
+    assert sc == pytest.approx(100 * (-8 * 0.5 + 6 * -0.5) / 30, abs=0.1)  # Σ|coef| = 14 < floor 30
     assert list(br.index)[0] == "dxy" and "vix" not in br.index
+    strong = pd.Series({f"i{k}": 10.0 for k in range(5)})
+    sc2, _ = macro_score(strong, pd.Series({f"i{k}": 1.0 for k in range(5)}))
+    assert sc2 == pytest.approx(100.0)  # strong, aligned evidence reaches +100
+    weak, _ = macro_score(pd.Series({"a": 0.6, "b": 0.4}), pd.Series({"a": 1.0, "b": 1.0}))
+    assert abs(weak) < 5  # uniformly weak evidence stays near zero
 
 
 def test_impact_job_end_to_end_on_synthetic_snapshot(tmp_path, monkeypatch):
@@ -165,6 +170,15 @@ def test_impact_job_end_to_end_on_synthetic_snapshot(tmp_path, monkeypatch):
     big = (coefs["coefficient"].abs() >= 5).mean()
     assert big < 0.05, f"{big:.1%} of coefficients ≥ 5 on pure noise"
     md = (tmp_path / "out" / "impact_summary.md").read_text()
+    from db.store import engine, table_counts
+    from jobs.impact import store
+    coefs2 = job.flag_conflicts(coefs, job.indicator_config()) if "conflict" not in coefs else coefs
+    eng = engine(f"sqlite:///{tmp_path / 'db.sqlite'}")
+    import json as _json
+    n = store(coefs2, _json.loads((tmp_path / "out" / "macro_scores.json").read_text()), pd.Timestamp("2026-09-28", tz="UTC"), eng)
+    assert n["impact_coefficients"] == len(coefs2) and n["macro_scores"] == 6
+    assert table_counts(eng)["impact_coefficients"] == len(coefs2)
+    engine.cache_clear()
     assert "Macro Score" in md and "Release events used" in md
 
 
