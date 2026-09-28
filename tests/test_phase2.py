@@ -59,14 +59,14 @@ def test_qe_qt_labels():
 def test_inversion_episodes_merge_filter_and_resteepen():
     d = pd.date_range("2022-01-01", "2024-12-31", freq="D")
     s = pd.Series(0.5, index=d)
-    s["2022-03-01":"2022-03-03"] = -0.05  # 3-day blip → ignored (min_days=5)
+    s["2022-03-01":"2022-03-03"] = -0.05  # 3-day blip → listed as brief, not an episode
     s["2022-07-01":"2023-06-30"] = -1.0
     s["2023-07-01":"2023-07-10"] = 0.1  # 10-day gap → merged
     s["2023-07-11":"2024-06-30"] = -0.5
     s["2023-02-01"] = -1.2
     eps = curve.inversion_episodes(s)
-    assert len(eps) == 1
-    e = eps.iloc[0]
+    assert len(eps) == 2 and bool(eps.iloc[0].brief) and not bool(eps.iloc[1].brief)  # 3-day blip kept, flagged
+    e = eps.iloc[1]
     assert e.start == pd.Timestamp("2022-07-01") and e.end == pd.Timestamp("2024-06-30")
     assert e.depth == -1.2 and e.depth_date == pd.Timestamp("2023-02-01")
     assert e.resteepen_date == pd.Timestamp("2024-07-01")

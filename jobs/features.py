@@ -118,7 +118,7 @@ def store(res: dict, eng=None) -> dict[str, int]:
     n["features"] = upsert(schema.features, rows, eng)
     ep_rows = [{"spread_key": k, "start_date": _d(e.start), "end_date": _d(e.end), "duration_days": int(e.duration_days),
                 "depth": float(e.depth), "depth_date": _d(e.depth_date), "resteepen_date": _d(e.resteepen_date),
-                "label": e.label, "computed_at": now}
+                "label": (f"(brief) {e.label or ''}".strip() if e.brief else e.label), "computed_at": now}
                for k, eps in res["episodes"].items() for e in eps.itertuples()]
     n["inversion_episodes"] = upsert(schema.inversion_episodes, ep_rows, eng)
     fw = res["fedwatch"]
@@ -163,6 +163,7 @@ def render(res: dict, stored: dict | None) -> str:
                      f"{r.cumulative_vs_today_bp:+.0f}bp | {r.method} |")
     rn = res["regime_now"]
     L += ["", "## Regime (rule-based, point-in-time)", "",
+          "_Phases, not NBER dating: \"Recession\" = below-average and deteriorating growth._", "",
           f"**{rn['regime']}** ({regime.REGIMES_FA[rn['regime']]}) at {rn['date']} · probabilities "
           + ", ".join(f"{k} {v:.0%}" for k, v in rn["probabilities"].items()), ""]
     L += [f"- {t}" for t in rn["triggers"]]
@@ -186,7 +187,7 @@ def render(res: dict, stored: dict | None) -> str:
               "| start | end | days | depth | depth date | re-steepened | note |", "|---|---|---|---|---|---|---|"]
         for e in eps.itertuples():
             L.append(f"| {_d(e.start)} | {_d(e.end) or 'ongoing'} | {e.duration_days} | {e.depth:+.2f} | {_d(e.depth_date)} | "
-                     f"{_d(e.resteepen_date) or '—'} | {e.label if isinstance(e.label, str) else ''} |")
+                     f"{_d(e.resteepen_date) or '—'} | {'(brief dip) ' if e.brief else ''}{e.label if isinstance(e.label, str) else ''} |")
         L.append("")
     if "qe_qt_segments" in res:
         seg = res["qe_qt_segments"]

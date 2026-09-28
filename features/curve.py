@@ -1,7 +1,8 @@
 """Yield-curve inversion episodes and re-steepening.
 
-An inversion episode is a run of the spread below zero. Short dips are filtered:
-- runs shorter than `min_days` (calendar days) are ignored;
+An inversion episode is a run of the spread below zero (daily closes):
+- runs shorter than `min_days` calendar days are kept but flagged `brief` (e.g. 10Y−2Y in 2019 closed below
+  zero on only 3 days, Aug 27-29); brief dips are listed for context but do not set the curve state;
 - inversions separated by less than `merge_gap_days` above zero are merged into one episode.
 For each episode: start, end (last inverted day), depth (min spread) and date of the minimum, duration,
 and **re-steepening**: the first date after the episode's end when the spread closes back above
@@ -40,8 +41,7 @@ def inversion_episodes(spread: pd.Series, min_days: int = 5, merge_gap_days: int
     last_date = s.index[-1]
     rows = []
     for start, end in merged:
-        if (end - start).days + 1 < min_days:
-            continue
+        brief = (end - start).days + 1 < min_days
         seg = s[start:end]
         ongoing = end == last_date
         after = s[s.index > end]
@@ -52,9 +52,10 @@ def inversion_episodes(spread: pd.Series, min_days: int = 5, merge_gap_days: int
             "depth": float(seg.min()), "depth_date": seg.idxmin(),
             "resteepen_date": None if ongoing or rs.empty else rs.index[0],
             "label": next((v for y, v in NOTABLE.items() if abs(start.year - y) <= 1), None),
+            "brief": brief,
         })
     return pd.DataFrame(rows, columns=["start", "end", "ongoing", "duration_days", "depth", "depth_date",
-                                       "resteepen_date", "label"])
+                                       "resteepen_date", "label", "brief"])
 
 
 def curve_state(spread: pd.Series, episodes: pd.DataFrame, lookback_days: int = 365) -> str:
@@ -62,7 +63,7 @@ def curve_state(spread: pd.Series, episodes: pd.DataFrame, lookback_days: int = 
     if spread.dropna().iloc[-1] < 0:
         return "inverted"
     today = spread.dropna().index[-1]
-    recent = episodes.dropna(subset=["resteepen_date"])
+    recent = episodes[~episodes["brief"].astype(bool)].dropna(subset=["resteepen_date"])
     if not recent.empty and (today - recent["resteepen_date"].max()).days <= lookback_days:
         return "re-steepening"
     return "normal"
