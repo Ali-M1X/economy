@@ -47,6 +47,9 @@ def test_qe_qt_labels():
     level = np.r_[np.full(60, 4000.0), 4000 * 1.01 ** np.arange(1, 71), np.full(70, 4000 * 1.01 ** 70) * 0.995 ** np.arange(70)]
     lab = derived.qe_qt_regime(pd.Series(level, index=w))
     assert lab.iloc[40] == 0 and lab.iloc[100] == 1 and lab.iloc[-1] == -1
+    # ~5%/yr growth (currency demand) is not QE
+    slow = pd.Series(4000 * 1.001 ** np.arange(200), index=w)
+    assert set(derived.qe_qt_regime(slow).unique()) == {0}
     seg = derived.regime_segments(lab)
     assert list(seg["label"]) == [0, 1, -1]
 
@@ -56,7 +59,7 @@ def test_qe_qt_labels():
 def test_inversion_episodes_merge_filter_and_resteepen():
     d = pd.date_range("2022-01-01", "2024-12-31", freq="D")
     s = pd.Series(0.5, index=d)
-    s["2022-03-01":"2022-03-05"] = -0.05  # 5-day blip → ignored
+    s["2022-03-01":"2022-03-03"] = -0.05  # 3-day blip → ignored (min_days=5)
     s["2022-07-01":"2023-06-30"] = -1.0
     s["2023-07-01":"2023-07-10"] = 0.1  # 10-day gap → merged
     s["2023-07-11":"2024-06-30"] = -0.5
@@ -165,7 +168,7 @@ def test_regime_rules_probabilities_and_cycle():
     assert np.allclose(probs[list(regime.REGIMES)].sum(axis=1), 1.0)
     assert set(probs["regime"]) == set(regime.REGIMES)  # a full cycle visits every quadrant
     trig = regime.switch_triggers(ax.loc[probs.index[-1]], probs["regime"].iloc[-1])
-    assert len(trig) == 2 and all("σ" in t for t in trig)
+    assert len(trig) == 2 and "growth level" in trig[0] and "momentum outlook" in trig[1]
 
 
 def test_regime_has_no_lookahead():

@@ -17,7 +17,7 @@ import pandas as pd
 # Well-known 10Y−2Y / 10Y−3M inversion episodes, shown as chart annotations (labels only; dates come
 # from the data itself).
 NOTABLE = {
-    1998: "LTCM / Asia crisis (brief, 10Y−2Y)",
+    1998: "LTCM / Asia crisis (brief)",
     2000: "Dot-com peak → 2001 recession",
     2006: "Housing peak → 2007-09 GFC",
     2019: "Trade war → 2020 recession (COVID)",
@@ -25,7 +25,7 @@ NOTABLE = {
 }
 
 
-def inversion_episodes(spread: pd.Series, min_days: int = 20, merge_gap_days: int = 30,
+def inversion_episodes(spread: pd.Series, min_days: int = 5, merge_gap_days: int = 30,
                        resteepen_level: float = 0.0) -> pd.DataFrame:
     s = spread.dropna().sort_index()
     below = s < 0

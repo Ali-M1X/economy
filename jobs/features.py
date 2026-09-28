@@ -76,7 +76,9 @@ def compute_all(data: dict[str, pd.DataFrame], vintages: dict[str, pd.DataFrame]
 
     # 5) Regimes on a point-in-time monthly panel
     known = {k: pit.known_series(data[k], reg[k], vintages.get(k)) for k in REGIME_KEYS if k in data}
-    grid = pd.date_range("1995-01-31", pd.Timestamp(today), freq="ME")
+    grid = pd.date_range("1991-01-31", pd.Timestamp(today), freq="ME")
+    if grid[-1] != pd.Timestamp(today):
+        grid = grid.append(pd.DatetimeIndex([pd.Timestamp(today)]))  # current, partial month: data known today
     panel = pit.asof_panel(known, grid)
     ax = regime.axes(panel)
     rules = regime.rule_probabilities(ax)
@@ -184,7 +186,7 @@ def render(res: dict, stored: dict | None) -> str:
               "| start | end | days | depth | depth date | re-steepened | note |", "|---|---|---|---|---|---|---|"]
         for e in eps.itertuples():
             L.append(f"| {_d(e.start)} | {_d(e.end) or 'ongoing'} | {e.duration_days} | {e.depth:+.2f} | {_d(e.depth_date)} | "
-                     f"{_d(e.resteepen_date) or '—'} | {e.label or ''} |")
+                     f"{_d(e.resteepen_date) or '—'} | {e.label if isinstance(e.label, str) else ''} |")
         L.append("")
     if "qe_qt_segments" in res:
         seg = res["qe_qt_segments"]

@@ -1,0 +1,38 @@
+name: features-dev
+# Fast iteration on Phase 2+ analytics: reuses the data snapshot (output/cache) of the latest successful
+# data-availability run instead of re-collecting. Never receives DATABASE_URL — no database access.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths: ["features/**", "models/**", "jobs/features.py", ".github/workflows/features-dev.yml"]
+concurrency: {group: features-dev, cancel-in-progress: true}
+permissions:
+  actions: read
+  contents: read
+jobs:
+  features:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r requirements.txt
+      - name: Find latest successful data snapshot
+        id: snap
+        env: {GH_TOKEN: "${{ github.token }}"}
+        run: |
+          RUN=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow data-availability.yml --status success \
+                --limit 1 --json databaseId -q '.[0].databaseId')
+          echo "run=$RUN" >> "$GITHUB_OUTPUT"; echo "using data-availability run $RUN"
+      - uses: actions/download-artifact@v4
+        with:
+          name: data-availability
+          path: snapshot
+          run-id: ${{ steps.snap.outputs.run }}
+          github-token: ${{ github.token }}
+      - run: python -m jobs.features --from-cache snapshot/cache
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: features-summary, path: output/features_summary.md}

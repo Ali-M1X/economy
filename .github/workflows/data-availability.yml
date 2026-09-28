@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
   push:
     branches: ["claude/**"]
-    paths: ["collectors/**", "config/**", "jobs/**", "core/**", "db/**", "validation/**", "features/**", "models/**",
+    paths: ["collectors/**", "config/**", "jobs/availability.py", "core/**", "db/**", "validation/**",
             ".github/workflows/data-availability.yml"]
 concurrency: {group: data-availability, cancel-in-progress: true}
 jobs:

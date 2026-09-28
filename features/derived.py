@@ -76,12 +76,14 @@ def net_liquidity(walcl: pd.Series, tga: pd.Series, rrp: pd.Series) -> pd.Series
     return out[out.index >= first].dropna()
 
 
-def qe_qt_regime(walcl: pd.Series, threshold_ann_pct: float = 5.0, min_weeks: int = 8) -> pd.Series:
-    """Label weekly balance-sheet regimes: 13-week change annualized above +threshold → QE (+1),
-    below −threshold → QT (−1), else 0. Runs shorter than `min_weeks` are absorbed into the prior regime
-    so one-off operations (e.g. year-end repo swings) do not flip the label."""
+def qe_qt_regime(walcl: pd.Series, qe_threshold: float = 10.0, qt_threshold: float = -4.0, min_weeks: int = 8) -> pd.Series:
+    """Label weekly balance-sheet regimes from the 13-week change, annualized: above +10% → QE (+1),
+    below −4% → QT (−1), else 0. The QE bar is higher because the balance sheet grows a few % a year
+    with currency demand alone (2003-06 was ~5%/yr and was not QE); runoff programmes shrink it by ~5-10%/yr.
+    Runs shorter than `min_weeks` are absorbed into the prior regime so one-off operations (year-end repo
+    swings, emergency facilities unwinding) do not flip the label."""
     ann = ((walcl / walcl.shift(13)) ** 4 - 1.0) * 100.0
-    raw = pd.Series(np.select([ann > threshold_ann_pct, ann < -threshold_ann_pct], [1, -1], 0), index=walcl.index)
+    raw = pd.Series(np.select([ann > qe_threshold, ann < qt_threshold], [1, -1], 0), index=walcl.index).astype(float)
     raw[ann.isna()] = np.nan
     lab = raw.copy()
     run_id = (raw != raw.shift()).cumsum()

@@ -5,23 +5,25 @@ Rule-based model (transparent, primary)
 Built on a point-in-time monthly panel (`features.pit`), so every historical label uses only data that
 was public at that month-end. Inputs are z-scored on an expanding window (no look-ahead).
 
-Axis 1 — growth momentum  g = 3-month change of the growth composite G, where G = mean z of:
-    Philly Fed activity, Empire State activity, 10Y−3M slope, −Baa−10Y spread, −NFCI,
-    −YoY change of 4-week initial claims, 3-month average payroll gain.
-Axis 2 — inflation/liquidity pressure  p = mean of:
-    z(core CPI 3m annualized − core CPI YoY)   (inflation accelerating → +)
-    −z(liquidity momentum)                     (liquidity draining → +; M2 YoY, WALCL 13w change, −NFCI)
-Quadrants (investment-clock style):
-    Recovery  = g > 0, p ≤ 0      Expansion = g > 0, p > 0
-    Peak      = g ≤ 0, p > 0      Recession = g ≤ 0, p ≤ 0
-Probabilities: P(g>0) = logistic(g / s_g), P(p>0) = logistic(p / s_p) with s = expanding std, and each
-regime's probability is the product of its two sides (they sum to 1). The label is the most likely regime.
-Switch triggers are the distances of g and p from zero.
+Growth level  G = 3-month average of the mean z of: Philly Fed activity, Empire State activity,
+    10Y−3M slope, −Baa−10Y spread, −NFCI, −YoY change of initial claims, 3-month average payroll gain.
+    (0 = historically average conditions.)
+Growth momentum  g = 3-month change of G.
+Inflation/liquidity pressure  p = mean of z(core CPI 3m annualized − YoY) and −z(liquidity momentum)
+    (liquidity = M2 YoY, WALCL 13-week change, −NFCI). Rising p (inflation accelerating, liquidity
+    draining) historically *precedes* slowing growth, so it enters the outlook with a minus sign:
+Momentum outlook  m = mean(z(g), −z(p)).
+Phases (classic level × momentum business-cycle definition):
+    Expansion = G > 0 and m > 0      Peak      = G > 0 and m ≤ 0
+    Recession = G ≤ 0 and m ≤ 0      Recovery  = G ≤ 0 and m > 0
+Probabilities: P(G>0) = logistic(G / s_G), P(m>0) = logistic(m / s_m) (s = expanding std / 2); each phase's
+probability is the product of its two sides (they sum to 1). The label is the most likely phase.
+Switch triggers are the distances of G and m from zero.
 
 HMM (optional, comparison only)
 -------------------------------
-A 4-state Gaussian HMM on (g, p) fitted on the full sample (in-sample parameters — labelled as such),
-with *filtered* (forward-only) state probabilities. States are mapped to regimes by their mean (g, p).
+A 4-state Gaussian HMM on (G, m) fitted on the full sample (in-sample parameters — labelled as such),
+with *filtered* (forward-only) state probabilities. States are mapped to phases by their mean (G, m).
 """
 
 from __future__ import annotations
@@ -76,7 +78,9 @@ def axes(panel: pd.DataFrame) -> pd.DataFrame:
     liq_mom = liq - liq.shift(3)
     infl = zscore(p["core_cpi_accel"], min_periods=MIN_Z_MONTHS) if "core_cpi_accel" in p else pd.Series(np.nan, index=p.index)
     pressure = pd.concat([infl, -zscore(liq_mom, min_periods=MIN_Z_MONTHS)], axis=1).mean(axis=1)
-    return pd.DataFrame({"growth_level": growth, "g": g, "p": pressure})
+    outlook = pd.concat([zscore(g, min_periods=MIN_Z_MONTHS), -zscore(pressure, min_periods=MIN_Z_MONTHS)], axis=1).mean(axis=1)
+    outlook[g.isna()] = np.nan  # growth momentum is required; pressure alone cannot set the phase
+    return pd.DataFrame({"G": growth, "g": g, "p": pressure, "m": outlook})
 
 
 def _logistic(x):
@@ -84,24 +88,23 @@ def _logistic(x):
 
 
 def rule_probabilities(ax: pd.DataFrame) -> pd.DataFrame:
-    sg = ax["g"].expanding(min_periods=24).std()
-    sp = ax["p"].expanding(min_periods=24).std()
-    pg = _logistic(ax["g"] / (0.5 * sg))
-    pp = _logistic(ax["p"] / (0.5 * sp))
-    probs = pd.DataFrame({"Expansion": pg * pp, "Peak": (1 - pg) * pp, "Recession": (1 - pg) * (1 - pp),
-                          "Recovery": pg * (1 - pp)}, index=ax.index).dropna()
+    sG = ax["G"].expanding(min_periods=24).std()
+    sm = ax["m"].expanding(min_periods=24).std()
+    pG = _logistic(ax["G"] / (0.5 * sG))
+    pm = _logistic(ax["m"] / (0.5 * sm))
+    probs = pd.DataFrame({"Expansion": pG * pm, "Peak": pG * (1 - pm), "Recession": (1 - pG) * (1 - pm),
+                          "Recovery": (1 - pG) * pm}, index=ax.index).dropna()
     probs["regime"] = probs[list(REGIMES)].idxmax(axis=1)
     return probs
 
 
 def switch_triggers(ax_row: pd.Series, regime: str) -> list[str]:
-    g, p = float(ax_row["g"]), float(ax_row["p"])
-    out = []
-    target_g = {"Expansion": "Peak", "Recovery": "Recession", "Peak": "Expansion", "Recession": "Recovery"}[regime]
-    target_p = {"Expansion": "Recovery", "Recovery": "Expansion", "Peak": "Recession", "Recession": "Peak"}[regime]
-    out.append(f"→ {target_g} if growth momentum crosses zero (now {g:+.2f}σ)")
-    out.append(f"→ {target_p} if inflation/liquidity pressure crosses zero (now {p:+.2f}σ)")
-    return out
+    G, m = float(ax_row["G"]), float(ax_row["m"])
+    by_level = {"Expansion": "Recovery", "Peak": "Recession", "Recession": "Peak", "Recovery": "Expansion"}[regime]
+    by_momentum = {"Expansion": "Peak", "Peak": "Expansion", "Recession": "Recovery", "Recovery": "Recession"}[regime]
+    return [f"→ {by_level} if the growth level crosses its historical average (now {G:+.2f}σ)",
+            f"→ {by_momentum} if the momentum outlook (growth momentum vs inflation/liquidity pressure) "
+            f"crosses zero (now {m:+.2f})"]
 
 
 @dataclass
@@ -115,7 +118,7 @@ def hmm_regimes(ax: pd.DataFrame, seed: int = 7) -> HmmResult | None:
         from hmmlearn.hmm import GaussianHMM
     except ImportError:
         return None
-    X = ax[["g", "p"]].dropna()
+    X = ax[["G", "m"]].dropna()
     if len(X) < 120:
         return None
     model = GaussianHMM(n_components=4, covariance_type="full", n_iter=500, random_state=seed)
