@@ -86,7 +86,10 @@ def _run_series(meta: SeriesMeta) -> tuple[SeriesReport, SeriesResult | None]:
     rep.fetch_seconds = round(time.monotonic() - t0, 2)
     df = res.data
     today = utcnow().date()
-    checks = validate_series(df, meta, today)
+    try:
+        checks = validate_series(df, meta, today)
+    except Exception as exc:  # noqa: BLE001 — a validation bug must not abort the whole report
+        checks = [CheckResult("validation", "fail", f"{exc.__class__.__name__}: {exc}"[:300])]
     rep.checks = [asdict(c) for c in checks]
     rep.status = overall(checks)
     rep.rows = len(df)

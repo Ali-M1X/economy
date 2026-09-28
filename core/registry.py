@@ -61,6 +61,12 @@ def _parse(raw: dict, defaults: dict) -> SeriesMeta:
         raise RegistryError(f"{data['key']}: bad frequency {data['frequency']}")
     if data["source"] not in SOURCES:
         raise RegistryError(f"{data['key']}: unknown source {data['source']}")
+    # PyYAML (YAML 1.1) reads e.g. `1.0e12` as a *string*; coerce numeric fields and fail loudly otherwise.
+    for f, typ in (("valid_min", float), ("valid_max", float), ("release_lag_days", int), ("max_stale_days", int)):
+        try:
+            data[f] = typ(data[f])
+        except (TypeError, ValueError) as exc:
+            raise RegistryError(f"{data['key']}: {f}={data[f]!r} is not a number") from exc
     if data["valid_min"] >= data["valid_max"]:
         raise RegistryError(f"{data['key']}: valid_min >= valid_max")
     if data.get("proxy") and not data.get("proxy_for"):

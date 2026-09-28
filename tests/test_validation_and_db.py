@@ -33,8 +33,18 @@ def test_registry_is_complete_and_consistent():
         assert m.url.startswith("https://"), m.key
         assert m.name_fa.strip(), m.key
         assert m.max_stale_days > 0, m.key
+        assert isinstance(m.valid_min, float) and isinstance(m.valid_max, float), m.key
         if m.proxy:
             assert m.proxy_for, m.key
+
+
+def test_registry_rejects_non_numeric_bounds(tmp_path):
+    from core.registry import RegistryError
+    p = tmp_path / "s.yaml"
+    p.write_text('series:\n  - {key: a, name_en: a, name_fa: a, category: rates, source: fred, source_id: A, url: "https://x", '
+                 'units: "%", frequency: D, release_lag_days: 1, max_stale_days: 7, valid_min: low, valid_max: 5, start: "2020-01-01"}\n')
+    with pytest.raises(RegistryError):
+        load_registry(p)
 
 
 def test_registry_covers_the_spec():
