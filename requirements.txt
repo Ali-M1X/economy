@@ -8,3 +8,5 @@ PyYAML>=6.0
 beautifulsoup4>=4.12
 websockets>=13
 python-dotenv>=1.0
+scipy>=1.13
+hmmlearn>=0.3
