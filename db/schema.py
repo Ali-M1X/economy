@@ -188,7 +188,9 @@ impact_coefficients = Table(
     Column("computed_on", Date, primary_key=True),
     Column("indicator", String(64), primary_key=True),
     Column("asset", String(8), primary_key=True),
-    Column("horizon", String(16), primary_key=True),  # 1h | 4h | 24h | 1-4w | 3-12m
+    Column("horizon", String(16), primary_key=True),  # 1h | 4h | 24h | 1w | 2w | 4w | 3m | 6m | 12m
+    Column("sample", String(32), primary_key=True),  # full | recent | regime:<name>
+    Column("bucket", String(8), nullable=False),  # short | medium | long
     Column("coefficient", Float, nullable=False),  # signed 0..10
     Column("effect_per_sigma", Float),
     Column("t_stat", Float),
@@ -294,6 +296,18 @@ Index("ix_signals_created", signals.c.created_at)
 Index("ix_reports_created", reports.c.created_at)
 
 
+# ───────────────────────────── Phase 3 (migration 004) ─────────────────────────────
+
+macro_scores = Table(
+    "macro_scores", metadata,
+    Column("computed_at", TS, primary_key=True),
+    Column("asset", String(8), primary_key=True),
+    Column("bucket", String(8), primary_key=True),  # short | medium | long
+    Column("score", Float),  # −100..+100; NULL when no input (e.g. no release in the last 24h)
+    Column("contributions", JSON, nullable=False),
+    Column("note", Text),
+)
+
 # Which tables each generated migration creates. Applied migrations are never edited; new tables go
 # into a new file.
 MIGRATION_TABLES = {
@@ -302,6 +316,7 @@ MIGRATION_TABLES = {
                      "observation_vintages", "observations", "orderbook_snapshots", "regime_states", "reports",
                      "series_meta", "signals"],
     "003_phase2.sql": ["fed_stance", "fedwatch", "inversion_episodes"],
+    "004_phase3.sql": ["macro_scores"],
 }
 # Tables created after 002_security.sql need RLS in their own migration.
 RLS_SQL = ("ALTER TABLE public.{t} ENABLE ROW LEVEL SECURITY;\n"

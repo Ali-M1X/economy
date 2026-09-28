@@ -1,5 +1,5 @@
 name: features-dev
-# Fast iteration on Phase 2+ analytics: reuses the data snapshot (output/cache) of the latest successful
+# Fast iteration on Phase 2+ analytics (features, impact coefficients): reuses the data snapshot (output/cache) of the latest successful
 # data-availability run instead of re-collecting. Never receives DATABASE_URL — no database access.
 on:
   workflow_dispatch:
@@ -10,7 +10,8 @@ on:
         default: ""
   push:
     branches: ["claude/**"]
-    paths: ["features/**", "models/**", "jobs/features.py", ".github/workflows/features-dev.yml"]
+    paths: ["features/**", "models/**", "backtest/**", "jobs/features.py", "jobs/impact.py",
+            ".github/workflows/features-dev.yml"]
 concurrency: {group: features-dev, cancel-in-progress: true}
 permissions:
   actions: read
@@ -42,6 +43,9 @@ jobs:
         env: {INSPECT: "${{ inputs.inspect }}"}
         run: python -m jobs.inspect_cache snapshot/cache $INSPECT
       - run: python -m jobs.features --from-cache snapshot/cache
+      - name: Phase 3 impact coefficients & macro score
+        if: success() || failure()
+        run: python -m jobs.impact --from-cache snapshot/cache
       - uses: actions/upload-artifact@v4
         if: always()
-        with: {name: features-summary, path: output/features_summary.md}
+        with: {name: analysis-outputs, path: "output/*"}

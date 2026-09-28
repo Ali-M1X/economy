@@ -211,3 +211,25 @@ def test_check_current_month_contract():
     assert futures.check_current_month(ok, effr, date(2026, 9, 28))[0] == "ok"
     bad = ok.assign(implied_rate=4.05)  # e.g. a mislabeled (Nov) contract
     assert futures.check_current_month(bad, effr, date(2026, 9, 28))[0] == "fail"
+
+
+def test_yahoo_chart_keeps_utc_bar_times():
+    df, _ = yahoo.parse_chart(json.loads((FIX / "yahoo_chart.json").read_text()))
+    assert str(df["ts_utc"].dt.tz) == "UTC" and df["ts_utc"].iloc[0] == pd.Timestamp("2026-09-22 04:00", tz="UTC")
+
+
+def test_candles_history_paginates_and_drops_forming_bar(monkeypatch):
+    calls = []
+    t0 = pd.Timestamp("2020-01-01", tz="UTC")
+
+    def fake(source, url, params):
+        calls.append(params["startTime"])
+        start = pd.Timestamp(params["startTime"], unit="ms", tz="UTC")
+        n = 1000 if len(calls) == 1 else 5
+        return [[int((start + pd.Timedelta(hours=i)).timestamp() * 1000), "1", "2", "0.5", "1.5", "10"] for i in range(n)]
+    monkeypatch.setattr(crypto, "get_json", fake)
+    df = crypto.candles_history("BTC", "1h", start=str(t0.date()), end=t0 + pd.Timedelta(hours=2000))
+    assert len(calls) == 2 and calls[1] == int((t0 + pd.Timedelta(hours=1000)).timestamp() * 1000)
+    assert len(df) == 1005 and df["ts"].is_unique
+    gaps = crypto.hourly_gaps(df.drop(index=[10, 11, 12]))
+    assert gaps.iloc[0]["bars"] == 3

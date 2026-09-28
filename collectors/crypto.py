@@ -82,6 +82,43 @@ def resample(df: pd.DataFrame, rule: str) -> pd.DataFrame:
     return out.reset_index()
 
 
+def candles_history(asset: str, interval: str = "1h", start: str = "2017-08-17",
+                    end: pd.Timestamp | None = None, max_requests: int = 400) -> pd.DataFrame:
+    """Full candle history from Binance's public market-data mirror (1000 bars per request, paginated
+    forward). Used for event studies and backtests. Gaps (exchange outages) are left as gaps — callers
+    see them via `hourly_gaps()`; nothing is interpolated."""
+    ms = {"15m": 900_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}[interval]
+    cursor = int(pd.Timestamp(start, tz="UTC").timestamp() * 1000)
+    stop = int((end or pd.Timestamp.now(tz="UTC")).timestamp() * 1000)
+    frames = []
+    for _ in range(max_requests):
+        rows = get_json("binance_vision", "https://data-api.binance.vision/api/v3/klines",
+                        params={"symbol": SPOT_SYMBOLS[asset]["binance_vision"], "interval": interval,
+                                "startTime": cursor, "limit": 1000})
+        if not rows:
+            break
+        frames.append(_frame(rows))
+        cursor = int(rows[-1][0]) + ms
+        if cursor > stop or len(rows) < 1000:
+            break
+    if not frames:
+        raise SourceError("binance_vision", f"no {asset} {interval} history from {start}")
+    df = pd.concat(frames, ignore_index=True).drop_duplicates("ts").sort_values("ts").reset_index(drop=True)
+    # the last bar may still be forming; keep only closed bars
+    return df[df["ts"] + pd.Timedelta(milliseconds=ms) <= pd.Timestamp.now(tz="UTC")].reset_index(drop=True)
+
+
+def hourly_gaps(df: pd.DataFrame, freq: str = "1h") -> pd.DataFrame:  # freq: "1h", "15min", ...
+    """Missing bars (start, end, bars) in a candle frame."""
+    full = pd.date_range(df["ts"].min(), df["ts"].max(), freq=freq, tz="UTC")
+    missing = full.difference(pd.DatetimeIndex(df["ts"]))
+    if missing.empty:
+        return pd.DataFrame(columns=["start", "end", "bars"])
+    s = pd.Series(missing)
+    grp = (s.diff() != pd.Timedelta(freq)).cumsum()
+    return pd.DataFrame([{"start": g.iloc[0], "end": g.iloc[-1], "bars": len(g)} for _, g in s.groupby(grp)])
+
+
 CANDLE_PROVIDERS: dict[str, Callable[[str, str, int], pd.DataFrame]] = {
     "binance_vision": _binance_vision, "okx": _okx, "bybit": _bybit, "coinbase": _coinbase,
 }

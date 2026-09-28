@@ -30,9 +30,11 @@ def parse_chart(payload: dict) -> tuple[pd.DataFrame, dict]:
     ts = res.get("timestamp") or []
     quote = (res.get("indicators", {}).get("quote") or [{}])[0]
     tz = meta.get("exchangeTimezoneName") or "UTC"
-    idx = pd.to_datetime(ts, unit="s", utc=True).tz_convert(tz).tz_localize(None)
+    utc = pd.to_datetime(ts, unit="s", utc=True)
+    idx = utc.tz_convert(tz).tz_localize(None)
     df = pd.DataFrame({k: quote.get(k, [None] * len(ts)) for k in ("open", "high", "low", "close", "volume")})
-    df.insert(0, "time", idx)
+    df.insert(0, "time", idx)  # exchange-local wall clock (daily bars: the trading date)
+    df.insert(1, "ts_utc", utc)  # exact bar start, for intraday work
     return df, meta
 
 

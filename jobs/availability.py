@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from collectors import calendar, crypto, fed, fred, futures, news
+from collectors import calendar, crypto, fed, fred, futures, news, yahoo
 from collectors.base import SeriesResult
 from collectors.series import fetch_series
 from core.http import SourceError
@@ -494,6 +494,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cache_dir:
         write_cache(Path(args.cache_dir), results, vintages, stash)
+        probes += cache_price_history(Path(args.cache_dir))
     db_report = store_all(registry, series, results, stash, started) if args.store else None
 
     OUT_DIR.mkdir(exist_ok=True)
@@ -525,6 +526,32 @@ def write_cache(d: Path, results: dict[str, SeriesResult], vintages: dict[str, p
                                                  for m in stash.get("fomc", [])]
     pd.DataFrame([{"event_id": e["event_id"], "release_id": e["release_id"], "scheduled_utc": e["scheduled_utc"]}
                   for e in ev], columns=["event_id", "release_id", "scheduled_utc"]).to_csv(d / "calendar_events.csv", index=False)
+
+
+def cache_price_history(d: Path) -> list[ProbeReport]:
+    """Hourly history for event studies/backtests: BTC & PAXG (Binance mirror), COMEX gold (Yahoo, ~2y)."""
+    out = []
+    for asset, start in (("BTC", "2017-08-17"), ("PAXG", "2020-09-01")):
+        def f(asset=asset, start=start):
+            df = crypto.candles_history(asset, "15m", start, max_requests=700)
+            df.to_csv(d / f"candles_{asset}_15m.csv.gz", index=False)
+            gaps = crypto.hourly_gaps(df, "15min")
+            big = gaps[gaps["bars"] > 8]
+            return ("ok" if big.empty else "warn"), (
+                f"{len(df):,} 15-min bars {df['ts'].iloc[0]:%Y-%m-%d} → {df['ts'].iloc[-1]:%Y-%m-%d %H:%M}Z; "
+                f"{int(gaps['bars'].sum()) if len(gaps) else 0} missing bars in {len(gaps)} gaps"
+                + (f"; {len(big)} gaps > 2h, largest {big.sort_values('bars').iloc[-1]['bars']} bars from "
+                   f"{big.sort_values('bars').iloc[-1]['start']:%Y-%m-%d %H:%M}Z" if not big.empty else ""))
+        out.append(_probe(f"history {asset} 15m (Binance mirror)", "history", f, proxy=asset == "PAXG"))
+
+    def g():
+        df, meta, _ = yahoo.chart("GC=F", interval="60m", range_="730d")
+        df = df.dropna(subset=["close"])
+        df["ts"] = df["ts_utc"]
+        df[["ts", "open", "high", "low", "close", "volume"]].to_csv(d / "candles_GCF_1h.csv.gz", index=False)
+        return "ok", f"{len(df):,} hourly bars {df['ts'].iloc[0]:%Y-%m-%d} → {df['ts'].iloc[-1]:%Y-%m-%d %H:%M}Z"
+    out.append(_probe("history GC=F 1h (Yahoo, ~730d)", "history", g))
+    return out
 
 
 def store_all(registry, series, results, stash, started) -> dict:

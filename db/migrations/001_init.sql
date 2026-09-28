@@ -113,6 +113,8 @@ CREATE TABLE IF NOT EXISTS impact_coefficients (
 	indicator VARCHAR(64) NOT NULL, 
 	asset VARCHAR(8) NOT NULL, 
 	horizon VARCHAR(16) NOT NULL, 
+	sample VARCHAR(32) NOT NULL, 
+	bucket VARCHAR(8) NOT NULL, 
 	coefficient FLOAT NOT NULL, 
 	effect_per_sigma FLOAT, 
 	t_stat FLOAT, 
@@ -120,7 +122,7 @@ CREATE TABLE IF NOT EXISTS impact_coefficients (
 	n INTEGER, 
 	confidence VARCHAR(8), 
 	details JSON, 
-	PRIMARY KEY (computed_on, indicator, asset, horizon)
+	PRIMARY KEY (computed_on, indicator, asset, horizon, sample)
 );
 
 CREATE TABLE IF NOT EXISTS liquidations (

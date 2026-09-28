@@ -33,6 +33,9 @@ jobs:
         if: success() || failure()
         run: |
           if [ -n "$DATABASE_URL" ]; then python -m jobs.features; else python -m jobs.features --from-cache output/cache; fi
+      - name: Phase 3 impact coefficients & macro score
+        if: success() || failure()
+        run: python -m jobs.impact --from-cache output/cache
       - uses: actions/upload-artifact@v4
         if: always()
         with: {name: data-availability, path: output/}
