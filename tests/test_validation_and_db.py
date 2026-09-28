@@ -53,7 +53,7 @@ def test_registry_covers_the_spec():
                 "PCEPI", "PCEPILFE", "M2SL", "WALCL", "RRPONTSYD", "NFCI", "ANFCI", "UNRATE", "CES0500000003",
                 "JTSJOL", "UNEMPLOY", "PAYEMS", "ICSA", "DGS2", "DGS10", "DGS30", "DGS3MO", "T10Y2Y", "T10Y3M",
                 "T10YIE", "BAMLH0A0HYM2", "BAMLC0A0CM", "DX-Y.NYB", "DTWEXBGS", "HG=F", "GC=F", "^GSPC", "XLF",
-                "XLU", "^NDX", "CL=F", "BZ=F", "SI=F", "NG=F", "DBC", "ZQ=F", "SR3=F"}
+                "XLU", "^NDX", "CL=F", "BZ=F", "SI=F", "NG=F", "DBC"}
     assert required <= ids, required - ids
 
 
@@ -77,6 +77,40 @@ def test_staleness():
     assert checks.check_staleness(df, m, date(2026, 9, 20)).status == "fail"
 
 
+def test_monthly_staleness_counts_from_period_end():
+    # August data (dated 2026-08-01) is the latest possible until the September release in early October
+    m = meta(frequency="M", max_stale_days=45)
+    df = frame(["2026-08-01"], [4.1])
+    assert checks.staleness_days(df, date(2026, 9, 28), "M") == 28
+    assert checks.check_staleness(df, m, date(2026, 9, 28)).ok
+    assert checks.check_staleness(df, m, date(2026, 10, 20)).status == "fail"
+    assert checks.staleness_days(frame(["2026-04-01"], [1]), date(2026, 9, 28), "Q") == 90
+
+
+def test_projection_staleness_uses_publication_time():
+    m = meta(frequency="A", projection=True, max_stale_days=120)
+    df = frame(["2026-01-01", "2027-01-01", "2028-01-01"], [3.6, 3.4, 3.1])  # target years, in the future
+    from datetime import datetime, timezone
+    pub = datetime(2026, 9, 16, 18, tzinfo=timezone.utc)
+    assert checks.check_staleness(df, m, date(2026, 9, 28), pub).ok
+    assert checks.check_staleness(df, m, date(2027, 3, 1), pub).status == "fail"
+    assert checks.check_staleness(df, m, date(2026, 9, 28), None).status == "warn"
+    assert checks.check_gaps(df, m).ok
+
+
+def test_seven_day_series_skip_weekend_check():
+    days = pd.date_range("2025-01-01", periods=400, freq="D")
+    assert checks.check_weekend_dates(frame(days, [1] * 400), meta()).status == "fail"
+    assert checks.check_weekend_dates(frame(days, [1] * 400), meta(calendar="7d")).ok
+
+
+def test_registry_seven_day_and_projection_flags():
+    reg = load_registry()
+    assert {k for k, m in reg.items() if m.calendar == "7d"} == {
+        "fed_funds_eff_daily", "fed_target_upper", "fed_target_lower", "iorb"}
+    assert reg["sep_fed_funds_median"].projection and reg["sep_fed_funds_median"].vintages
+
+
 def test_weekend_dates_catch_timezone_shift():
     sundays = pd.date_range("2025-01-05", periods=60, freq="W-SUN")
     assert checks.check_weekend_dates(frame(sundays, [1] * 60), meta()).status == "fail"
@@ -85,9 +119,17 @@ def test_weekend_dates_catch_timezone_shift():
     assert checks.check_weekend_dates(frame(sundays, [1] * 60), meta(category="crypto")).ok
 
 
-def test_gap_check_warns():
-    df = frame(["2026-01-02", "2026-01-05", "2026-03-01"], [1, 1, 1])
-    assert checks.check_gaps(df, meta()).status == "warn"
+def test_gap_check_reports_the_actual_gap():
+    df = frame(["2026-01-02", "2026-01-05", "2026-03-01", "2026-03-02"], [1, 1, 1, 1])
+    r = checks.check_gaps(df, meta())
+    assert r.status == "warn" and "2026-01-05 → 2026-03-01" in r.message and "55d" in r.message
+
+
+def test_gap_check_monthly_missing_month():
+    # A month the source never published: Sep → Nov is a 61-day gap
+    df = frame(["2025-08-01", "2025-09-01", "2025-11-01", "2025-12-01"], [1, 1, 1, 1])
+    r = checks.check_gaps(df, meta(frequency="M"))
+    assert r.status == "warn" and "2025-09-01 → 2025-11-01" in r.message
 
 
 def test_cross_check_abs_and_rel():

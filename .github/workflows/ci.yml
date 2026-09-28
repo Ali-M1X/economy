@@ -5,9 +5,20 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env: {POSTGRES_PASSWORD: pw, POSTGRES_DB: mp}
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_POSTGRES_URL: postgresql://postgres:pw@localhost:5432/mp
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.12", cache: pip}
       - run: pip install -r requirements-dev.txt
+      - name: Create Supabase roles used by the RLS migration
+        run: PGPASSWORD=pw psql -h localhost -U postgres -d mp -c "CREATE ROLE anon NOLOGIN; CREATE ROLE authenticated NOLOGIN;"
       - run: python -m pytest -q

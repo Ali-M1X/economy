@@ -25,14 +25,25 @@ def engine(url: str | None = None) -> Engine:
         url = "postgresql+psycopg://" + url[len("postgresql://"):]
     if url.startswith("sqlite:///"):
         Path(url[len("sqlite:///"):]).parent.mkdir(parents=True, exist_ok=True)
-    return create_engine(url, pool_pre_ping=True, future=True)
+        return create_engine(url, future=True)
+    # Supabase's transaction pooler (port 6543) cannot keep server-side prepared statements, so disable
+    # psycopg's automatic preparing; harmless on direct and session-pooler connections.
+    return create_engine(url, pool_pre_ping=True, future=True, connect_args={"prepare_threshold": None})
 
 
-def init_db(eng: Engine | None = None) -> None:
-    schema.metadata.create_all(eng or engine())
+def describe_target(eng: Engine) -> str:
+    """Dialect + host, without credentials (safe to print in CI logs)."""
+    u = eng.url
+    return "sqlite (local file)" if u.get_backend_name() == "sqlite" else f"postgresql @ {u.host}:{u.port}/{u.database}"
 
 
-def upsert(table: Table, rows: Iterable[dict], eng: Engine | None = None, chunk: int = 1000) -> int:
+def init_db(eng: Engine | None = None) -> list[str]:
+    from db.migrate import migrate
+
+    return migrate(eng or engine())
+
+
+def upsert(table: Table, rows: Iterable[dict], eng: Engine | None = None) -> int:
     rows = list(rows)
     if not rows:
         return 0
@@ -44,6 +55,8 @@ def upsert(table: Table, rows: Iterable[dict], eng: Engine | None = None, chunk:
     else:  # pragma: no cover
         raise NotImplementedError(eng.dialect.name)
     pk = [c.name for c in table.primary_key.columns]
+    # Postgres allows 65535 bind parameters per statement; SQLite (≥3.32) 32766.
+    chunk = max(1, (30000 if eng.dialect.name == "sqlite" else 60000) // len(rows[0]))
     with eng.begin() as conn:
         for i in range(0, len(rows), chunk):
             stmt = insert(table).values(rows[i:i + chunk])
@@ -51,6 +64,14 @@ def upsert(table: Table, rows: Iterable[dict], eng: Engine | None = None, chunk:
             stmt = stmt.on_conflict_do_update(index_elements=pk, set_=update) if update else stmt.on_conflict_do_nothing()
             conn.execute(stmt)
     return len(rows)
+
+
+def table_counts(eng: Engine | None = None) -> dict[str, int]:
+    from sqlalchemy import func, select
+
+    eng = eng or engine()
+    with eng.connect() as conn:
+        return {t.name: conn.execute(select(func.count()).select_from(t)).scalar_one() for t in schema.metadata.sorted_tables}
 
 
 def save_series_meta(metas: Iterable[SeriesMeta], status: dict[str, dict] | None = None,

@@ -171,3 +171,43 @@ def test_et_to_utc_handles_dst():
     assert et_to_utc(datetime(2026, 1, 14, 8, 30)).hour == 13  # EST
     assert et_to_utc(datetime(2026, 7, 15, 8, 30)).hour == 12  # EDT
     assert et_to_utc(datetime(2026, 7, 15, 8, 30)).astimezone(TEHRAN).strftime("%H:%M") == "16:00"
+
+
+def test_rss_bytes_with_bom_parse_but_misdecoded_text_would_not():
+    raw = b"\xef\xbb\xbf" + (FIX / "rss.xml").read_bytes()
+    assert rss.parse_feed(raw, "fed_all")[0]["title"].startswith("Federal Reserve issues")
+    # what requests.Response.text produces for text/xml without a charset header:
+    with pytest.raises(SourceError):
+        rss.parse_feed(raw.decode("iso-8859-1"), "fed_all")
+
+
+def test_rss_html_block_page_is_named():
+    with pytest.raises(SourceError, match="HTML page"):
+        rss.parse_feed(b"<!DOCTYPE HTML><html><title>Access Denied</title></html>", "bls")
+
+
+def test_okx_oi_history_parse():
+    df = crypto.parse_okx_oi_history([["1790290800000", "2775900", "27759", "2319000000"],
+                                      ["1790287200000", "2770000", "27700", "2300000000"]])
+    assert df["ts"].is_monotonic_increasing
+    assert df["open_interest"].iloc[-1] == 27759 and df["open_interest_usd"].iloc[-1] == 2.319e9
+
+
+def _effr_sep_2026_hike():
+    days = pd.date_range("2026-08-01", "2026-09-27", freq="D")
+    vals = [3.63 if d < pd.Timestamp("2026-09-17") else 3.88 for d in days]
+    return pd.DataFrame({"date": days, "value": vals})
+
+
+def test_realized_month_average_with_mid_month_hike():
+    avg, known, n = futures.realized_month_average(_effr_sep_2026_hike(), 2026, 9, date(2026, 9, 28))
+    assert (known, n) == (27, 30)
+    assert round(avg, 3) == 3.747  # 16 days at 3.63 + 14 days at 3.88
+
+
+def test_check_current_month_contract():
+    effr = _effr_sep_2026_hike()
+    ok = pd.DataFrame([{"contract": "ZQU26.CBT", "contract_month": date(2026, 9, 1), "implied_rate": 3.747}])
+    assert futures.check_current_month(ok, effr, date(2026, 9, 28))[0] == "ok"
+    bad = ok.assign(implied_rate=4.05)  # e.g. a mislabeled (Nov) contract
+    assert futures.check_current_month(bad, effr, date(2026, 9, 28))[0] == "fail"

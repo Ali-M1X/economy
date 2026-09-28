@@ -12,7 +12,8 @@ from core.settings import ROOT
 
 REGISTRY_PATH = ROOT / "config" / "series.yaml"
 
-FREQUENCIES = {"D", "W", "M", "Q", "intraday"}
+FREQUENCIES = {"D", "W", "M", "Q", "A", "intraday"}
+CALENDARS = {"business", "7d"}
 SOURCES = {"fred", "treasury", "fiscaldata", "nyfed", "yahoo", "bls"}
 
 
@@ -42,6 +43,10 @@ class SeriesMeta:
     proxy: bool = False
     proxy_for: str | None = None
     vintages: bool = False
+    # "7d" = the source publishes a value for every calendar day (e.g. DFF, target range, IORB)
+    calendar: str = "business"
+    # True for forecast series whose dates are *target periods* (e.g. SEP dot plot), not observation dates
+    projection: bool = False
     cross_check: CrossCheck | None = None
 
 
@@ -67,6 +72,8 @@ def _parse(raw: dict, defaults: dict) -> SeriesMeta:
             data[f] = typ(data[f])
         except (TypeError, ValueError) as exc:
             raise RegistryError(f"{data['key']}: {f}={data[f]!r} is not a number") from exc
+    if data.get("calendar", "business") not in CALENDARS:
+        raise RegistryError(f"{data['key']}: bad calendar {data['calendar']}")
     if data["valid_min"] >= data["valid_max"]:
         raise RegistryError(f"{data['key']}: valid_min >= valid_max")
     if data.get("proxy") and not data.get("proxy_for"):

@@ -87,7 +87,7 @@ def _run_series(meta: SeriesMeta) -> tuple[SeriesReport, SeriesResult | None]:
     df = res.data
     today = utcnow().date()
     try:
-        checks = validate_series(df, meta, today)
+        checks = validate_series(df, meta, today, res.source_last_updated)
     except Exception as exc:  # noqa: BLE001 — a validation bug must not abort the whole report
         checks = [CheckResult("validation", "fail", f"{exc.__class__.__name__}: {exc}"[:300])]
     rep.checks = [asdict(c) for c in checks]
@@ -101,7 +101,7 @@ def _run_series(meta: SeriesMeta) -> tuple[SeriesReport, SeriesResult | None]:
         rep.first_date = f"{df['date'].iloc[0]:%Y-%m-%d}"
         rep.last_date = f"{df['date'].iloc[-1]:%Y-%m-%d}"
         rep.last_value = round(float(df["value"].iloc[-1]), 6)
-        rep.age_days = staleness_days(df, today)
+        rep.age_days = staleness_days(df, today, meta.frequency)
     return rep, res
 
 
@@ -125,8 +125,9 @@ def run_series(registry: dict[str, SeriesMeta], workers: int = 6):
     return reports, results
 
 
-def run_vintages(registry: dict[str, SeriesMeta], reports: dict[str, SeriesReport], store: bool) -> None:
+def run_vintages(registry: dict[str, SeriesMeta], reports: dict[str, SeriesReport]) -> dict[str, pd.DataFrame]:
     has_key = bool(get_settings().fred_api_key)
+    out: dict[str, pd.DataFrame] = {}
     for key, meta in registry.items():
         if not meta.vintages:
             continue
@@ -135,23 +136,33 @@ def run_vintages(registry: dict[str, SeriesMeta], reports: dict[str, SeriesRepor
             continue
         try:
             v = fred.fetch_vintages(meta)
+            out[key] = v
             reports[key].vintages = f"ok: {len(v)} vintage rows, {v['realtime_start'].nunique()} release dates"
-            if store:
-                from db.store import save_vintages
-                save_vintages(key, v)
         except Exception as exc:  # noqa: BLE001
             reports[key].vintages = f"fail: {exc}"[:300]
+    return out
 
 
-def _probe(name: str, group: str, fn, proxy: bool = False) -> ProbeReport:
+def _probe(name: str, group: str, fn, proxy: bool = False, known_block: bool = False) -> ProbeReport:
+    """`known_block`: the host is documented (DATA_GAPS.md) as refusing US runners, so an HTTP 403/451
+    is reported as an expected limitation (warn) rather than a new failure."""
     try:
         status, detail = fn()
     except Exception as exc:  # noqa: BLE001
         status, detail = "fail", f"{exc.__class__.__name__}: {exc}"[:400]
+        if known_block and ("HTTP 403" in detail or "HTTP 451" in detail):
+            status, detail = "warn", "blocked from US runners — expected, see DATA_GAPS.md (" + detail[:160] + ")"
     return ProbeReport(name, group, status, detail, proxy)
 
 
-def run_probes(store: bool) -> list[ProbeReport]:
+def _errs(errs: dict[str, str]) -> str:
+    """One short reason per failing source, so no source is hidden by truncation."""
+    if not errs:
+        return ""
+    return "; failed: " + "; ".join(f"{k}: {v.split(']', 1)[-1].strip()[:90]}" for k, v in errs.items())
+
+
+def run_probes(results: dict[str, SeriesResult] | None = None) -> tuple[list[ProbeReport], dict]:
     probes: list[ProbeReport] = []
     stash: dict = {}
 
@@ -170,7 +181,8 @@ def run_probes(store: bool) -> list[ProbeReport]:
             def g(asset=asset, venue=venue):
                 r = crypto.candles(asset, "1h", limit=50, venues=(venue,))
                 return "ok", f"{len(r.data)} bars, last close {r.data['close'].iloc[-1]:,.2f}"
-            probes.append(_probe(f"venue {venue} {asset} 1h", "prices", g, proxy=asset == "PAXG"))
+            probes.append(_probe(f"venue {venue} {asset} 1h", "prices", g, proxy=asset == "PAXG",
+                                 known_block=venue in crypto.GEO_BLOCKED_FROM_US))
 
     def btc_vs_paxg_sanity():
         btc = stash.get(("BTC", "1d"))
@@ -188,8 +200,7 @@ def run_probes(store: bool) -> list[ProbeReport]:
             depth = crypto.aggregate_depth(books, bucket=100.0 if asset == "BTC" else 5.0)
             bids = depth[depth.side == "bid"]
             asks = depth[depth.side == "ask"]
-            if store:
-                stash[f"book_{asset}"] = (books, depth)
+            stash[f"book_{asset}"] = (books, depth)
             return ("ok" if len(books) >= 2 else "warn"), (
                 f"venues {sorted(books)}; {len(bids)} bid / {len(asks)} ask buckets; "
                 f"bid ${bids.usd.sum()/1e6:,.1f}M ask ${asks.usd.sum()/1e6:,.1f}M" + (f"; failed {list(errs)}" if errs else ""))
@@ -202,12 +213,21 @@ def run_probes(store: bool) -> list[ProbeReport]:
             return "fail", str(errs)
         parts = [f"{v}: OI {x['open_interest']:,.0f} BTC (${x['open_interest_usd']/1e9:,.2f}B), funding {x['funding_rate']*100:.4f}%"
                  for v, x in d.items()]
-        return ("ok" if len(d) >= 2 else "warn"), "; ".join(parts) + (f"; failed {list(errs)}: " + "; ".join(errs.values())[:200] if errs else "")
+        blocked = [v for v in errs if v in crypto.GEO_BLOCKED_FROM_US and ("403" in errs[v] or "451" in errs[v])]
+        other = {v: e for v, e in errs.items() if v not in blocked}
+        if blocked:
+            parts.append(f"geo-blocked from US (expected): {blocked}")
+        if other:
+            parts.append(f"failed: {other}")
+        return ("warn" if other else "ok"), "; ".join(parts)
     probes.append(_probe("open interest & funding BTC", "derivatives", deriv))
 
     def oi_hist():
         df = crypto.open_interest_history("BTC", "1h")
-        return "ok", f"bybit OI history: {len(df)} hourly points, last {df['ts'].iloc[-1]:%Y-%m-%d %H:%M}Z"
+        stash["oi_hist"] = df
+        last = df.iloc[-1]
+        return "ok", (f"okx OI history: {len(df)} hourly points, last {last.ts:%Y-%m-%d %H:%M}Z "
+                      f"{last.open_interest:,.0f} BTC (${last.open_interest_usd/1e9:,.2f}B)")
     probes.append(_probe("open interest history BTC", "derivatives", oi_hist))
 
     def liq_okx():
@@ -228,7 +248,7 @@ def run_probes(store: bool) -> list[ProbeReport]:
     def feeds():
         items, errs = fed.fed_feeds()
         latest = max((i["published_utc"] for i in items if i["published_utc"]), default=None)
-        return ("ok" if not errs else "warn"), f"{len(items)} items, latest {latest}" + (f"; failed {errs}" if errs else "")
+        return ("ok" if not errs else "warn"), f"{len(items)} items, latest {latest}" + _errs(errs)
     probes.append(_probe("Fed RSS (press, speeches, testimony)", "fed", feeds))
 
     def fomc():
@@ -245,21 +265,23 @@ def run_probes(store: bool) -> list[ProbeReport]:
         ev = calendar.from_bls_ics(today, today + pd.Timedelta(days=45))
         return ("ok" if ev else "warn"), f"{len(ev)} tracked BLS releases in next 45d: " + ", ".join(
             f"{e['release_id']} {e['scheduled_utc']:%m-%d %H:%M}Z" for e in ev[:6])
-    probes.append(_probe("BLS release calendar (ICS)", "calendar", bls_ics))
+    probes.append(_probe("BLS release calendar (ICS)", "calendar", bls_ics, known_block=True))
 
     def fred_dates():
         if not get_settings().fred_api_key:
             return "warn", "skipped: FRED_API_KEY not set"
         today = utcnow().date()
         ev = calendar.from_fred(today, today + pd.Timedelta(days=30))
+        stash["calendar_fred"] = ev
         return "ok", f"{len(ev)} tracked releases in next 30d: " + ", ".join(f"{e['release_id']} {e['scheduled_utc']:%m-%d}" for e in ev[:8])
     probes.append(_probe("FRED release dates", "calendar", fred_dates))
 
     # News
     def agency_feeds():
         items, errs = news.collect()
+        stash["news"] = items
         by_src = pd.Series([i["source"].split(":")[0] for i in items]).value_counts().to_dict() if items else {}
-        return ("ok" if not errs else "warn"), f"{len(items)} unique items {by_src}" + (f"; failed: {errs}" if errs else "")
+        return ("ok" if not errs else "warn"), f"{len(items)} unique items {by_src}" + _errs(errs)
     probes.append(_probe("news (Fed/BLS/BEA/Treasury RSS + GDELT)", "news", agency_feeds))
 
     # Rate expectations
@@ -273,41 +295,116 @@ def run_probes(store: bool) -> list[ProbeReport]:
             return ("ok" if not errs else "warn"), f"{len(df)}/{n} contracts: {path}" + (f"; missing {list(errs)}" if errs else "")
         probes.append(_probe(f"{root} futures curve (Yahoo)", "expectations", fc))
 
-    if store:
-        _store_probe_data(stash)
-    return probes
+    results = results or {}
+
+    def zq_vs_effr():
+        curve_df = stash.get("fut_ZQ")
+        effr = results.get("fed_funds_eff_daily")
+        if curve_df is None or curve_df.empty or effr is None:
+            return "warn", "missing inputs (ZQ curve or DFF)"
+        fomc_dates = [m["decision_date"] for m in stash.get("fomc", [])]
+        return futures.check_current_month(curve_df, effr.data, utcnow().date(), fomc_dates)
+    probes.append(_probe("ZQ current-month contract vs realized EFFR", "expectations", zq_vs_effr))
+
+    def continuous_mapping():
+        # Which specific contract do Yahoo's "continuous" tickers actually track?
+        parts = []
+        for cont, root in (("ZQ=F", "ZQ"), ("SR3=F", "SR3")):
+            curve_df = stash.get(f"fut_{root}")
+            price, _ = futures._last_price(cont)
+            if curve_df is None or curve_df.empty:
+                parts.append(f"{cont} {price:.3f}")
+                continue
+            near = curve_df.iloc[(curve_df["price"] - price).abs().argsort()[:1]].iloc[0]
+            front = curve_df.iloc[0]
+            parts.append(f"{cont} {price:.3f} ≈ {near.contract} {near.price:.3f} (front {front.contract} {front.price:.3f})")
+        return "ok", "; ".join(parts)
+    probes.append(_probe("Yahoo continuous futures vs contracts", "expectations", continuous_mapping))
+
+    def spot_vs_futures():
+        out = []
+        for name, spot_k, fut_k in (("Brent", "brent_spot_eia", "brent_futures"), ("WTI", "wti_spot_eia", "wti_futures")):
+            if spot_k not in results or fut_k not in results:
+                out.append(f"{name}: missing inputs")
+                continue
+            m = results[spot_k].data.merge(results[fut_k].data, on="date", suffixes=("_spot", "_fut")).tail(60)
+            prem = (m["value_spot"] / m["value_fut"] - 1) * 100
+            last = m.tail(5)
+            recent = ", ".join(f"{r.date:%m-%d} {r.value_spot:.2f}/{r.value_fut:.2f}" for r in last.itertuples())
+            out.append(f"{name} spot−futures premium over last {len(m)} common days: mean {prem.mean():+.1f}%, "
+                       f"min {prem.min():+.1f}%, max {prem.max():+.1f}%; last (spot/fut): {recent}")
+        return "ok", " || ".join(out)
+    probes.append(_probe("spot vs front futures (Brent, WTI)", "commodities", spot_vs_futures))
+
+    return probes, stash
 
 
-def _store_probe_data(stash: dict) -> None:
+def _store_probe_data(stash: dict) -> dict[str, int]:
     from db import schema
     from db.store import upsert
 
+    def py(v):  # numpy/pandas scalars → plain Python for the DB driver
+        if isinstance(v, pd.Timestamp):
+            return v.to_pydatetime()
+        return v.item() if hasattr(v, "item") else v
+
     now = utcnow()
+    n: dict[str, int] = {}
     for (asset, iv), r in [(k, v) for k, v in stash.items() if isinstance(k, tuple)]:
-        rows = [{"asset": asset, "venue": r.venue, "interval": iv, "ts": t.to_pydatetime(), "open": o, "high": h,
-                 "low": lo, "close": c, "volume": v, "is_proxy": asset == "PAXG"}
+        rows = [{"asset": asset, "venue": r.venue, "interval": iv, "ts": t.to_pydatetime(), "open": py(o), "high": py(h),
+                 "low": py(lo), "close": py(c), "volume": py(v), "is_proxy": asset == "PAXG"}
                 for t, o, h, lo, c, v in r.data[["ts", "open", "high", "low", "close", "volume"]].itertuples(index=False)]
-        upsert(schema.candles, rows)
+        n["candles"] = n.get("candles", 0) + upsert(schema.candles, rows)
     for asset in ("BTC", "PAXG"):
         if f"book_{asset}" in stash:
             books, depth = stash[f"book_{asset}"]
-            upsert(schema.orderbook_snapshots, [{"asset": asset, "ts": now, "bucket_size": 100.0 if asset == "BTC" else 5.0,
-                                                 "mid_price": None, "venues": sorted(books),
-                                                 "depth": depth.to_dict(orient="records")}])
-    for venue, d in stash.get("deriv", {}).items():
-        upsert(schema.derivatives_snapshots, [{"asset": "BTC", "venue": venue, "ts": now, **{
-            k: (v.to_pydatetime() if isinstance(v, pd.Timestamp) else v) for k, v in d.items()}}])
+            n["orderbook_snapshots"] = n.get("orderbook_snapshots", 0) + upsert(schema.orderbook_snapshots, [{
+                "asset": asset, "ts": now, "bucket_size": 100.0 if asset == "BTC" else 5.0, "mid_price": None,
+                "venues": sorted(books), "depth": json.loads(depth.to_json(orient="records"))}])
+    deriv_rows = [{"asset": "BTC", "venue": venue, "ts": now, **{k: py(v) for k, v in d.items()}}
+                  for venue, d in stash.get("deriv", {}).items()]
+    oi = stash.get("oi_hist")
+    if oi is not None and not oi.empty:
+        deriv_rows += [{"asset": "BTC", "venue": "okx", "ts": r.ts.to_pydatetime(), "open_interest": py(r.open_interest),
+                        "open_interest_usd": py(r.open_interest_usd), "funding_rate": None, "mark_price": None,
+                        "next_funding_ts": None} for r in oi.itertuples()]
+    if deriv_rows:
+        # multi-row INSERT needs one key set: normalise every row to the table's columns
+        n["derivatives_snapshots"] = upsert(schema.derivatives_snapshots, [
+            {c.name: r.get(c.name) for c in schema.derivatives_snapshots.columns} for r in deriv_rows])
+    liq_rows = []
     liq = stash.get("liq_okx")
     if liq is not None and not liq.empty:
-        upsert(schema.liquidations, [{"raw_id": r.raw_id, "venue": "okx", "asset": r.asset, "ts": r.ts.to_pydatetime(),
-                                      "side": r.side, "price": r.price, "qty": r.qty_contracts, "usd": None}
-                                     for r in liq.itertuples()])
-    for r in stash.get("liq_bybit", []):
-        upsert(schema.liquidations, [{**r, "ts": r["ts"].to_pydatetime(), "usd": r["price"] * r["qty"]}])
+        liq_rows += [{"raw_id": r.raw_id, "venue": "okx", "asset": r.asset, "ts": r.ts.to_pydatetime(), "side": r.side,
+                      "price": py(r.price), "qty": py(r.qty_contracts), "usd": None} for r in liq.itertuples()]
+    liq_rows += [{**r, "ts": r["ts"].to_pydatetime(), "usd": r["price"] * r["qty"]} for r in stash.get("liq_bybit", [])]
+    if liq_rows:
+        n["liquidations"] = upsert(schema.liquidations, liq_rows)
     for root in ("ZQ", "SR3"):
         df = stash.get(f"fut_{root}")
         if df is not None and not df.empty:
-            upsert(schema.futures_quotes, [{**r, "quote_ts": r["quote_ts"].to_pydatetime()} for r in df.to_dict("records")])
+            n["futures_quotes"] = n.get("futures_quotes", 0) + upsert(
+                schema.futures_quotes, [{k: py(v) for k, v in r.items()} for r in df.to_dict("records")])
+    events = list(stash.get("calendar_fred", []))
+    rel_fomc = next(r for r in calendar.tracked_releases() if r["id"] == "fomc")
+    for m in stash.get("fomc", []):
+        events.append(calendar._event(rel_fomc, m["decision_date"], "federalreserve.gov"))
+    if events:
+        n["calendar_events"] = upsert(schema.calendar_events, [{
+            "event_id": e["event_id"], "release_id": e["release_id"], "name_en": e["name_en"], "name_fa": e["name_fa"],
+            "scheduled_utc": e["scheduled_utc"], "importance": e["importance"], "date_source": e["date_source"],
+            "status": "scheduled" if e["scheduled_utc"] > now else "released"} for e in events])
+    items = stash.get("news", [])
+    if items:
+        n["news_items"] = upsert(schema.news_items, [{
+            "id": i["id"], "source": i["source"], "published_utc": i["published_utc"], "title": i["title"] or "(untitled)",
+            "url": i["url"], "summary": i.get("summary") or None} for i in items])
+        doc_type = {"fed_monetary": "statement", "fed_all": "press", "fed_speeches": "speech", "fed_testimony": "testimony"}
+        fed_docs = [{"id": i["id"], "doc_type": doc_type[i["source"]], "published_utc": i["published_utc"],
+                     "title": i["title"] or "(untitled)", "url": i["url"]} for i in items if i["source"] in doc_type]
+        if fed_docs:
+            n["fed_documents"] = upsert(schema.fed_documents, fed_docs)
+    return n
 
 
 # ─────────────────────────────── rendering ───────────────────────────────
@@ -315,7 +412,8 @@ def _store_probe_data(stash: dict) -> None:
 ICON = {"ok": "✅", "warn": "⚠️", "fail": "❌"}
 
 
-def render_markdown(series: dict[str, SeriesReport], probes: list[ProbeReport], started) -> str:
+def render_markdown(series: dict[str, SeriesReport], probes: list[ProbeReport], started,
+                    db_report: dict | None = None) -> str:
     s = get_settings()
     counts = pd.Series([r.status for r in series.values()]).value_counts().to_dict()
     pcounts = pd.Series([p.status for p in probes]).value_counts().to_dict()
@@ -357,6 +455,22 @@ def render_markdown(series: dict[str, SeriesReport], probes: list[ProbeReport], 
         name = p.name + (" **(PROXY)**" if p.proxy else "")
         lines.append(f"| {ICON[p.status]} | {p.group} | {name} | {p.detail.replace('|', '/')[:500]} |")
     lines.append("")
+    lines += ["## Database", ""]
+    if db_report is None:
+        lines.append("Not stored (run without `--store`).")
+    else:
+        lines.append(f"{'❌ **Storage failed:** `' + db_report['error'] + '`' if db_report.get('error') else '✅ Stored'} "
+                     f"· target: {db_report.get('target')} · migrations applied this run: "
+                     f"{db_report.get('migrations_applied') or 'none (up to date)'}")
+        lines.append("")
+        if db_report.get("readback"):
+            lines.append("Read-back of latest values: " + " · ".join(db_report["readback"]))
+            lines.append("")
+        if db_report.get("counts"):
+            lines += ["| table | rows written this run | total rows in DB |", "|---|---|---|"]
+            for t, c in db_report["counts"].items():
+                lines.append(f"| {t} | {db_report['stored'].get(t, '')} | {c:,} |")
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -372,28 +486,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.only:
         registry = {k: v for k, v in registry.items() if k in set(args.only)}
 
-    if args.store:
-        from db.store import init_db
-        init_db()
-
     series, results = run_series(registry)
-    run_vintages(registry, series, args.store)
-    if args.store:
-        from db.store import save_observations, save_series_meta
-        for key, res in results.items():
-            save_observations(key, res.data)
-        save_series_meta(registry.values(), status={k: {
-            "last_fetched_at": started,
-            "last_obs_date": pd.Timestamp(r.last_date).date() if r.last_date else None,
-            "source_last_updated": pd.Timestamp(r.source_last_updated).to_pydatetime() if r.source_last_updated else None,
-            "last_status": r.status,
-            "last_message": r.error or "; ".join(c["message"] for c in r.checks if c["status"] != "ok") or None,
-        } for k, r in series.items()})
+    vintages = run_vintages(registry, series)
+    probes, stash = ([], {}) if args.no_probes else run_probes(results)
+    stash["_vintages"] = vintages
 
-    probes = [] if args.no_probes else run_probes(args.store)
+    db_report = store_all(registry, series, results, stash, started) if args.store else None
 
     OUT_DIR.mkdir(exist_ok=True)
-    md = render_markdown(series, probes, started)
+    md = render_markdown(series, probes, started, db_report)
     (OUT_DIR / "data_availability.md").write_text(md, encoding="utf-8")
     (OUT_DIR / "data_availability.json").write_text(json.dumps(
         {"generated_at": started.isoformat(), "series": [asdict(r) for r in series.values()],
@@ -402,7 +503,57 @@ def main(argv: list[str] | None = None) -> int:
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
             fh.write(md)
     print(md)
-    return 0
+    return 1 if db_report and db_report.get("error") else 0
+
+
+def store_all(registry, series, results, stash, started) -> dict:
+    """Persist everything fetched in this run, then read it back to prove it landed."""
+    from db import schema
+    from db.store import describe_target, engine, init_db, save_observations, save_series_meta, save_vintages, table_counts
+
+    rep: dict = {"target": None, "stored": {}, "error": None}
+    try:
+        eng = engine()
+        rep["target"] = describe_target(eng)
+        rep["migrations_applied"] = init_db(eng)
+        n_obs = sum(save_observations(k, r.data) for k, r in results.items())
+        rep["stored"]["observations"] = n_obs
+        save_series_meta(registry.values(), status={k: {
+            "last_fetched_at": started,
+            "last_obs_date": pd.Timestamp(r.last_date).date() if r.last_date else None,
+            "source_last_updated": pd.Timestamp(r.source_last_updated).to_pydatetime() if r.source_last_updated else None,
+            "last_status": r.status,
+            "last_message": r.error or "; ".join(c["message"] for c in r.checks if c["status"] != "ok") or None,
+        } for k, r in series.items()})
+        rep["stored"]["series_meta"] = len(registry)
+        n_vint = 0
+        for key, v in stash.get("_vintages", {}).items():
+            n_vint += save_vintages(key, v)
+        rep["stored"]["observation_vintages"] = n_vint
+        rep["stored"].update(_store_probe_data(stash))
+        rep["counts"] = table_counts(eng)
+        # Read-back: the latest stored value must equal what was just fetched.
+        checks = []
+        for key in ("ust_10y", "cpi", "fed_balance_sheet", "gold_futures", "btc_usd_daily"):
+            if key in results and not results[key].data.empty:
+                from db.store import load_series
+                db = load_series(key, eng)
+                want = results[key].data.iloc[-1]
+                got = db.iloc[-1] if not db.empty else None
+                okv = got is not None and got["date"] == want["date"] and abs(got["value"] - want["value"]) < 1e-9
+                checks.append(f"{'✅' if okv else '❌'} {key} {want['date']:%Y-%m-%d}={want['value']:g}"
+                              + ("" if okv else f" (db: {None if got is None else got.to_dict()})"))
+        rep["readback"] = checks
+        if any(c.startswith("❌") for c in checks):
+            rep["error"] = "read-back mismatch"
+    except Exception as exc:  # noqa: BLE001 — reported in the summary and fails the job
+        rep["error"] = f"{exc.__class__.__name__}: {str(exc)[:500]}"
+        target = rep.get("target") or ""
+        if ".supabase.co" in target and target.split("@ ")[-1].startswith("db."):
+            rep["error"] += (" — hint: Supabase's direct host (db.<ref>.supabase.co) is IPv6-only and GitHub runners "
+                             "have no IPv6; use the Session pooler connection string (…pooler.supabase.com:5432).")
+        traceback.print_exc()
+    return rep
 
 
 if __name__ == "__main__":

@@ -23,6 +23,8 @@ SPOT_SYMBOLS = {
     "PAXG": {"binance_vision": "PAXGUSDT", "okx": "PAXG-USDT", "bybit": "PAXGUSDT", "coinbase": "PAXG-USD"},
 }
 PERP_SYMBOLS = {"BTC": {"bybit": "BTCUSDT", "okx": "BTC-USDT-SWAP", "binance_futures": "BTCUSDT"}}
+# Venues that refuse US IPs (GitHub Actions runners). Kept for non-US VPS deployments.
+GEO_BLOCKED_FROM_US = {"bybit", "binance_futures"}
 
 
 def _frame(rows: list[list], ts_unit: str = "ms") -> pd.DataFrame:
@@ -206,7 +208,7 @@ def _deriv_binance(symbol: str) -> dict:
             "next_funding_ts": pd.Timestamp(int(pi["nextFundingTime"]), unit="ms", tz="UTC")}
 
 
-DERIV_PROVIDERS = {"bybit": _deriv_bybit, "okx": _deriv_okx, "binance_futures": _deriv_binance}
+DERIV_PROVIDERS = {"okx": _deriv_okx, "bybit": _deriv_bybit, "binance_futures": _deriv_binance}
 
 
 def derivatives(asset: str = "BTC") -> tuple[dict[str, dict], dict[str, str]]:
@@ -219,17 +221,27 @@ def derivatives(asset: str = "BTC") -> tuple[dict[str, dict], dict[str, str]]:
     return out, errors
 
 
-def open_interest_history(asset: str = "BTC", interval: str = "1h", limit: int = 200) -> pd.DataFrame:
-    """Bybit OI history (base units) — input for liquidation-cluster estimation."""
-    iv = {"15m": "15min", "1h": "1h", "4h": "4h", "1d": "1d"}[interval]
-    p = get_json("bybit", "https://api.bybit.com/v5/market/open-interest",
-                 params={"category": "linear", "symbol": PERP_SYMBOLS[asset]["bybit"], "intervalTime": iv, "limit": min(limit, 200)})
-    if p.get("retCode") != 0:
-        raise SourceError("bybit", p.get("retMsg", "error"))
-    df = pd.DataFrame(p["result"]["list"])
-    df["ts"] = pd.to_datetime(pd.to_numeric(df["timestamp"]), unit="ms", utc=True)
-    df["open_interest"] = pd.to_numeric(df["openInterest"])
-    return df[["ts", "open_interest"]].sort_values("ts").reset_index(drop=True)
+def open_interest_history(asset: str = "BTC", interval: str = "1h", limit: int = 100) -> pd.DataFrame:
+    """OKX perpetual open-interest history — input for liquidation-cluster estimation.
+
+    Bybit's equivalent endpoint is geo-blocked from US IPs (GitHub runners), so OKX is primary.
+    Returns ts, open_interest (base units, e.g. BTC), open_interest_usd.
+    """
+    period = {"15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}[interval]
+    p = get_json("okx", "https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-history",
+                 params={"instId": PERP_SYMBOLS[asset]["okx"], "period": period, "limit": min(limit, 100)})
+    if p.get("code") != "0" or not p.get("data"):
+        raise SourceError("okx", f"open-interest-history: {p.get('code')} {p.get('msg')}")
+    return parse_okx_oi_history(p["data"])
+
+
+def parse_okx_oi_history(rows: list[list]) -> pd.DataFrame:
+    # rows (newest first): [ts_ms, oi_contracts, oi_ccy, oi_usd]
+    df = pd.DataFrame([r[:4] for r in rows], columns=["ts", "oi_contracts", "open_interest", "open_interest_usd"])
+    df["ts"] = pd.to_datetime(pd.to_numeric(df["ts"]), unit="ms", utc=True)
+    for c in ("open_interest", "open_interest_usd"):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df[["ts", "open_interest", "open_interest_usd"]].sort_values("ts").reset_index(drop=True)
 
 
 # ─────────────────────────────── liquidations ───────────────────────────────
