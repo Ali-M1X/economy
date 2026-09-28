@@ -12,7 +12,8 @@ Growth momentum  g = 3-month change of G.
 Inflation/liquidity pressure  p = mean of z(core CPI 3m annualized − YoY) and −z(liquidity momentum)
     (liquidity = M2 YoY, WALCL 13-week change, −NFCI). Rising p (inflation accelerating, liquidity
     draining) historically *precedes* slowing growth, so it enters the outlook with a minus sign:
-Momentum outlook  m = mean(z(g), −z(p)).
+Momentum outlook  m = mean(g / s_g, −p / s_p)  (s = expanding std: momentum is scaled, never re-centred,
+    so m > 0 means "improving", not "better than the historical average momentum").
 Phases (classic level × momentum business-cycle definition):
     Expansion = G > 0 and m > 0      Peak      = G > 0 and m ≤ 0
     Recession = G ≤ 0 and m ≤ 0      Recovery  = G ≤ 0 and m > 0
@@ -43,7 +44,7 @@ GROWTH_INPUTS = {  # key → sign (+1 means higher = stronger growth)
     "nfci": -1, "claims_yoy": -1, "payrolls_3m_avg": +1,
 }
 LIQUIDITY_INPUTS = {"m2_yoy": +1, "walcl_13w": +1, "nfci": -1}
-MIN_Z_MONTHS = 60
+MIN_Z_MONTHS = 36
 
 
 def build_inputs(panel: pd.DataFrame) -> pd.DataFrame:
@@ -78,7 +79,9 @@ def axes(panel: pd.DataFrame) -> pd.DataFrame:
     liq_mom = liq - liq.shift(3)
     infl = zscore(p["core_cpi_accel"], min_periods=MIN_Z_MONTHS) if "core_cpi_accel" in p else pd.Series(np.nan, index=p.index)
     pressure = pd.concat([infl, -zscore(liq_mom, min_periods=MIN_Z_MONTHS)], axis=1).mean(axis=1)
-    outlook = pd.concat([zscore(g, min_periods=MIN_Z_MONTHS), -zscore(pressure, min_periods=MIN_Z_MONTHS)], axis=1).mean(axis=1)
+    # Momentum keeps its natural zero (improving vs deteriorating): scale by the expanding std, never re-centre.
+    scale = lambda x: x / x.expanding(min_periods=24).std()  # noqa: E731
+    outlook = pd.concat([scale(g), -scale(pressure)], axis=1).mean(axis=1)
     outlook[g.isna()] = np.nan  # growth momentum is required; pressure alone cannot set the phase
     return pd.DataFrame({"G": growth, "g": g, "p": pressure, "m": outlook})
 
