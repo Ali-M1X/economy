@@ -115,15 +115,37 @@ def medium_long(cfg: dict, data: dict, vintages: dict, regimes: pd.Series, now: 
 
 # ───────────────────────────── macro score ─────────────────────────────
 
+def theory_signs(cfg: dict) -> dict[tuple[str, str, str], int]:
+    """(section, indicator, asset) → prior sign; section 'short' uses release priors, else state priors."""
+    out = {}
+    for sec, items in (("short", cfg["releases"]), ("state", cfg["state"])):
+        for i in items:
+            for asset, sign in (i.get("theory") or {}).items():
+                out[(sec, i["key"], asset)] = int(sign)
+    return out
+
+
+def flag_conflicts(coefs: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    th = theory_signs(cfg)
+    sec = np.where(coefs["bucket"] == "short", "short", "state")
+    coefs = coefs.copy()
+    coefs["theory"] = [th.get((s_, i, a), 0) for s_, i, a in zip(sec, coefs["indicator"], coefs["asset"])]
+    coefs["conflict"] = (coefs["theory"] != 0) & (np.sign(coefs["coefficient"]) * coefs["theory"] < 0) \
+        & (coefs["coefficient"].abs() >= 1)
+    return coefs
+
+
 def headline(coefs: pd.DataFrame, asset: str, bucket: str) -> pd.Series:
     """Signed headline coefficient per indicator. BTC blends full-sample and recent (last 3y) equally,
     because its macro sensitivity changed over time."""
     h = impact.HEADLINE[bucket]
     c = coefs[(coefs["asset"] == asset) & (coefs["bucket"] == bucket) & (coefs["horizon"] == h)]
-    full = c[c["sample"] == "full"].set_index("indicator")["coefficient"]
+    # coefficients that contradict the theory prior count at half weight in the score
+    c = c.assign(w=np.where(c["conflict"], 0.5, 1.0) * c["coefficient"])
+    full = c[c["sample"] == "full"].set_index("indicator")["w"]
     if asset != "BTC":
         return full
-    recent = c[c["sample"] == "recent"].set_index("indicator")["coefficient"]
+    recent = c[c["sample"] == "recent"].set_index("indicator")["w"]
     return pd.concat([full, recent], axis=1).mean(axis=1)
 
 
@@ -173,7 +195,9 @@ def scores(coefs: pd.DataFrame, wk: pd.DataFrame, mo: pd.DataFrame, evs: pd.Data
 def render(coefs: pd.DataFrame, evs: pd.DataFrame, sc: dict, now: pd.Timestamp) -> str:
     L = ["# Phase 3 — Impact coefficients & Macro Score", "", f"As of {now:%Y-%m-%d %H:%M} UTC", "",
          "Impact Coefficient: signed 0–10 (+ = indicator up / hotter surprise → asset up). "
-         "Descriptive historical co-movement, not a forecast. See `models/impact.py` for the formula.", ""]
+         "Descriptive historical co-movement, not a forecast. See `models/impact.py` for the formula.",
+         "Theory column: textbook sign from `config/indicators.yaml`; ⚠ = the estimate contradicts it "
+         "(kept as estimated, but half weight in the Macro Score). Short-horizon gold uses PAXG (proxy, from 2020-09).", ""]
     L += ["## Macro Score (−100 … +100)", "", "| asset | short (24h events) | medium (4w) | long (6m) |", "|---|---|---|---|"]
     for a, d in sc.items():
         cell = lambda b: "—" if d[b]["score"] is None else f"{d[b]['score']:+.0f}"  # noqa: E731
@@ -189,11 +213,13 @@ def render(coefs: pd.DataFrame, evs: pd.DataFrame, sc: dict, now: pd.Timestamp) 
         h = impact.HEADLINE[bucket]
         c = coefs[(coefs["bucket"] == bucket) & (coefs["horizon"] == h) & (~coefs["sample"].str.startswith("regime"))]
         L += ["", f"## {title} (headline {h})", "",
-              "| indicator | asset | sample | coef | β per 1σ (%) | t | n | hit | conf |", "|---|---|---|---|---|---|---|---|---|"]
+              "| indicator | asset | sample | coef | β per 1σ (%) | t | n | hit | conf | theory |",
+              "|---|---|---|---|---|---|---|---|---|---|"]
         for r in c.sort_values("coefficient", key=abs, ascending=False).itertuples():
             hit = "" if r.hit_rate is None or pd.isna(r.hit_rate) else f"{r.hit_rate:.0%}"
+            th = "⚠ conflicts" if r.conflict else {1: "+", -1: "−", 0: "?"}[r.theory]
             L.append(f"| {r.indicator} | {r.asset} | {r.sample} | {r.coefficient:+.1f} | {r.beta:+.3f} | {r.t_stat:+.2f} | "
-                     f"{r.n} | {hit} | {r.confidence} |")
+                     f"{r.n} | {hit} | {r.confidence} | {th} |")
     rc = coefs[coefs["sample"].str.startswith("regime")]
     if not rc.empty:
         L += ["", "## Regime-conditional long-horizon coefficients (6m, |coef| ≥ 3)", "",
@@ -225,6 +251,7 @@ def main(argv: list[str] | None = None) -> int:
     ml_ests, wk, mo = medium_long(cfg, data, vintages, rules["regime"], now.tz_localize(None))
     coefs = impact.estimates_frame(short_ests + ml_ests)
     coefs["asset"] = coefs["asset"].replace({"Gold(PAXG)": "Gold"})
+    coefs = flag_conflicts(coefs, cfg)
     sc = scores(coefs, wk, mo, evs, cfg, now)
     OUT_DIR.mkdir(exist_ok=True)
     coefs.to_csv(OUT_DIR / "impact_coefficients.csv", index=False)

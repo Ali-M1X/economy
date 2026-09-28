@@ -87,17 +87,25 @@ def normalize(e: Estimate) -> Estimate:
 
 # ───────────────────────────── short: event study ─────────────────────────────
 
+Z_CAP = 4.0  # surprises beyond ±4 robust σ are capped in regressions (limits single-event leverage)
+MIN_HIT_EVENTS = 20
+
+
 def event_study(ev: pd.DataFrame, indicator: str, asset: str, sample: str = "full",
                 horizons=("1h", "4h", "24h")) -> list[Estimate]:
+    """Hit rate = share of events with |z| ≥ 0.5 where the asset moved in the direction implied by β;
+    reported only when at least 20 such events exist."""
     out = []
     for h in horizons:
         col = f"ret_{h}"
         if col not in ev:
             continue
         d = ev[["z", col]].dropna()
-        b, t, n = ols_nw(d[col].to_numpy(), d["z"].to_numpy(), lag=0)
+        zc = d["z"].clip(-Z_CAP, Z_CAP)
+        b, t, n = ols_nw(d[col].to_numpy(), zc.to_numpy(), lag=0)
         big = d[d["z"].abs() >= 0.5]
-        hit = float((np.sign(big[col]) == np.sign(b * big["z"])).mean()) if len(big) and np.isfinite(b) else None
+        hit = (float((np.sign(big[col]) == np.sign(b * big["z"])).mean())
+               if len(big) >= MIN_HIT_EVENTS and np.isfinite(b) else None)
         out.append(normalize(Estimate(indicator, asset, h, "short", sample, b, t, n, float(n),
                                       float(d[col].std()) if n > 1 else np.nan, hit)))
     return out

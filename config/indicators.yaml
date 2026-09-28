@@ -5,6 +5,10 @@
 #   logdiff = log change ×100 (prices, balance sheets)
 # channels: transmission channels (see `channels` below) — explanations may only use these.
 # up_means: what a rise means in plain terms (for reports).
+# theory: textbook sign of the effect on each asset when the indicator rises (or the surprise is hotter):
+#   +1 bullish, −1 bearish, 0 ambiguous. Estimated coefficients are never changed, but a coefficient whose
+#   sign conflicts with a non-zero prior is flagged and counts at half weight in the Macro Score, so a
+#   recent spurious co-movement cannot dominate the score. Edit these priors if you disagree.
 
 channels:
   rates:          {fa: "نرخ بهره اسمی", en: "Nominal rates: higher yields raise the opportunity cost of holding non-yielding assets"}
@@ -20,37 +24,37 @@ channels:
 
 # Scheduled releases: event study on first-print surprises (short horizon)
 releases:
-  - {key: cpi,               measure: mom_pct,   expected: mean3, release: cpi,    channels: [inflation, policy, real_yields], up_means: "hotter inflation"}
-  - {key: core_cpi,          measure: mom_pct,   expected: mean3, release: cpi,    channels: [inflation, policy, real_yields], up_means: "hotter core inflation"}
-  - {key: ppi_final_demand,  measure: mom_pct,   expected: mean3, release: ppi,    channels: [inflation, policy], up_means: "hotter producer prices"}
-  - {key: pce,               measure: mom_pct,   expected: mean3, release: pce,    channels: [inflation, policy], up_means: "hotter PCE inflation"}
-  - {key: core_pce,          measure: mom_pct,   expected: mean3, release: pce,    channels: [inflation, policy], up_means: "hotter core PCE"}
-  - {key: nonfarm_payrolls,  measure: diff,      expected: mean3, release: nfp,    channels: [growth, policy, rates], up_means: "stronger job growth"}
-  - {key: unemployment_rate, measure: level,     expected: prev,  release: nfp,    channels: [growth, policy], up_means: "higher unemployment (weaker labour market)"}
-  - {key: avg_hourly_earnings, measure: mom_pct, expected: mean3, release: nfp,    channels: [inflation, policy], up_means: "faster wage growth"}
-  - {key: jolts_openings,    measure: level,     expected: prev,  release: jolts,  channels: [growth, policy], up_means: "more job openings"}
-  - {key: initial_claims,    measure: level,     expected: mean4, release: claims, channels: [growth], up_means: "more jobless claims (weaker labour market)"}
+  - {key: cpi,               measure: mom_pct,   expected: mean3, release: cpi,    channels: [inflation, policy, real_yields], up_means: "hotter inflation", theory: {BTC: -1, Gold: -1}}
+  - {key: core_cpi,          measure: mom_pct,   expected: mean3, release: cpi,    channels: [inflation, policy, real_yields], up_means: "hotter core inflation", theory: {BTC: -1, Gold: -1}}
+  - {key: ppi_final_demand,  measure: mom_pct,   expected: mean3, release: ppi,    channels: [inflation, policy], up_means: "hotter producer prices", theory: {BTC: -1, Gold: -1}}
+  - {key: pce,               measure: mom_pct,   expected: mean3, release: pce,    channels: [inflation, policy], up_means: "hotter PCE inflation", theory: {BTC: -1, Gold: -1}}
+  - {key: core_pce,          measure: mom_pct,   expected: mean3, release: pce,    channels: [inflation, policy], up_means: "hotter core PCE", theory: {BTC: -1, Gold: -1}}
+  - {key: nonfarm_payrolls,  measure: diff,      expected: mean3, release: nfp,    channels: [growth, policy, rates], up_means: "stronger job growth", theory: {BTC: -1, Gold: -1}}
+  - {key: unemployment_rate, measure: level,     expected: prev,  release: nfp,    channels: [growth, policy], up_means: "higher unemployment (weaker labour market)", theory: {BTC: 1, Gold: 1}}
+  - {key: avg_hourly_earnings, measure: mom_pct, expected: mean3, release: nfp,    channels: [inflation, policy], up_means: "faster wage growth", theory: {BTC: -1, Gold: -1}}
+  - {key: jolts_openings,    measure: level,     expected: prev,  release: jolts,  channels: [growth, policy], up_means: "more job openings", theory: {BTC: -1, Gold: -1}}
+  - {key: initial_claims,    measure: level,     expected: mean4, release: claims, channels: [growth], up_means: "more jobless claims (weaker labour market)", theory: {BTC: 1, Gold: 1}}
 
 # Market / macro state indicators: medium (weeks) and long (months) horizons
 state:
-  - {key: ust_2y,                change: diff,    channels: [rates, policy], up_means: "higher 2-year yield"}
-  - {key: ust_10y,               change: diff,    channels: [rates], up_means: "higher 10-year yield"}
-  - {key: real_yield_10y,        change: diff,    channels: [real_yields], up_means: "higher real yield"}
-  - {key: breakeven_10y,         change: diff,    channels: [inflation], up_means: "higher inflation expectations"}
-  - {key: spread_10y_2y,         change: diff,    channels: [growth, rates], up_means: "steeper curve"}
-  - {key: fed_funds_eff_daily,   change: diff,    channels: [policy], up_means: "higher policy rate"}
-  - {key: dxy,                   change: logdiff, channels: [dollar], up_means: "stronger dollar"}
-  - {key: baa_10y_spread,        change: diff,    channels: [credit, safe_haven], up_means: "wider credit spreads"}
-  - {key: nfci,                  change: diff,    channels: [liquidity, credit], up_means: "tighter financial conditions"}
-  - {key: vix,                   change: diff,    channels: [risk_appetite, safe_haven], up_means: "higher equity volatility"}
-  - {key: move_index,            change: diff,    channels: [rates, risk_appetite], up_means: "higher bond volatility"}
-  - {key: spx,                   change: logdiff, channels: [risk_appetite], up_means: "equities up"}
-  - {key: copper_futures,        change: logdiff, channels: [growth], up_means: "copper up (growth)"}
-  - {key: wti_futures,           change: logdiff, channels: [inflation], up_means: "oil up"}
-  - {key: fed_balance_sheet,     change: logdiff, channels: [liquidity], up_means: "Fed balance sheet growing"}
-  - {key: net_liquidity_weekly,  change: logdiff, channels: [liquidity], up_means: "net liquidity rising", derived: true}
-  - {key: m2,                    change: logdiff, channels: [liquidity], up_means: "money supply growing"}
-  - {key: initial_claims,        change: logdiff, channels: [growth], up_means: "more jobless claims"}
-  - {key: unemployment_rate,     change: diff,    channels: [growth, policy], up_means: "higher unemployment"}
-  - {key: philly_fed_activity,   change: diff,    channels: [growth], up_means: "stronger manufacturing"}
-  - {key: core_cpi,              change: logdiff, channels: [inflation, policy], up_means: "faster core inflation"}
+  - {key: ust_2y,                change: diff,    channels: [rates, policy], up_means: "higher 2-year yield", theory: {BTC: -1, Gold: -1}}
+  - {key: ust_10y,               change: diff,    channels: [rates], up_means: "higher 10-year yield", theory: {BTC: -1, Gold: -1}}
+  - {key: real_yield_10y,        change: diff,    channels: [real_yields], up_means: "higher real yield", theory: {BTC: -1, Gold: -1}}
+  - {key: breakeven_10y,         change: diff,    channels: [inflation], up_means: "higher inflation expectations", theory: {BTC: 1, Gold: 1}}
+  - {key: spread_10y_2y,         change: diff,    channels: [growth, rates], up_means: "steeper curve", theory: {BTC: 0, Gold: 0}}
+  - {key: fed_funds_eff_daily,   change: diff,    channels: [policy], up_means: "higher policy rate", theory: {BTC: -1, Gold: -1}}
+  - {key: dxy,                   change: logdiff, channels: [dollar], up_means: "stronger dollar", theory: {BTC: -1, Gold: -1}}
+  - {key: baa_10y_spread,        change: diff,    channels: [credit, safe_haven], up_means: "wider credit spreads", theory: {BTC: -1, Gold: 0}}
+  - {key: nfci,                  change: diff,    channels: [liquidity, credit], up_means: "tighter financial conditions", theory: {BTC: -1, Gold: 0}}
+  - {key: vix,                   change: diff,    channels: [risk_appetite, safe_haven], up_means: "higher equity volatility", theory: {BTC: -1, Gold: 0}}
+  - {key: move_index,            change: diff,    channels: [rates, risk_appetite], up_means: "higher bond volatility", theory: {BTC: -1, Gold: 0}}
+  - {key: spx,                   change: logdiff, channels: [risk_appetite], up_means: "equities up", theory: {BTC: 1, Gold: 0}}
+  - {key: copper_futures,        change: logdiff, channels: [growth], up_means: "copper up (growth)", theory: {BTC: 1, Gold: 0}}
+  - {key: wti_futures,           change: logdiff, channels: [inflation], up_means: "oil up", theory: {BTC: 0, Gold: 1}}
+  - {key: fed_balance_sheet,     change: logdiff, channels: [liquidity], up_means: "Fed balance sheet growing", theory: {BTC: 1, Gold: 1}}
+  - {key: net_liquidity_weekly,  change: logdiff, channels: [liquidity], up_means: "net liquidity rising", derived: true, theory: {BTC: 1, Gold: 1}}
+  - {key: m2,                    change: logdiff, channels: [liquidity], up_means: "money supply growing", theory: {BTC: 1, Gold: 1}}
+  - {key: initial_claims,        change: logdiff, channels: [growth], up_means: "more jobless claims", theory: {BTC: 0, Gold: 1}}
+  - {key: unemployment_rate,     change: diff,    channels: [growth, policy], up_means: "higher unemployment", theory: {BTC: 0, Gold: 1}}
+  - {key: philly_fed_activity,   change: diff,    channels: [growth], up_means: "stronger manufacturing", theory: {BTC: 1, Gold: 0}}
+  - {key: core_cpi,              change: logdiff, channels: [inflation, policy], up_means: "faster core inflation", theory: {BTC: -1, Gold: 0}}

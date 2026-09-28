@@ -6,7 +6,9 @@ For each release date R of an indicator (a date on which a *new* observation fir
                together with the new print are what the market saw);
 - `expected` = a naive expectation from the same vintage (no free consensus exists; see DATA_GAPS.md):
                mean3 = mean of the previous 3 measures, mean4 = previous 4 levels, prev = previous level;
-- `surprise` = actual − expected, and `z` = surprise / std of all *earlier* surprises (≥ 12 of them).
+- `surprise` = actual − expected, and `z` = surprise / robust scale of all *earlier* surprises (≥ 12 of them),
+  robust scale = 1.4826 × median absolute deviation. A plain std is useless here: the April-2020 payroll
+  print (−20 million) inflated it so much that every later z was ≈ 0.
 Dates with more than one new observation (bulk/benchmark loads) keep only the newest observation.
 The release time of day comes from config/releases.yaml (US/Eastern, DST-aware).
 """
@@ -73,8 +75,10 @@ def surprises(vintages: pd.DataFrame, key: str, measure: str, expected: str, rel
     if df.empty:
         return df
     df["surprise"] = df["actual"] - df["expected"]
-    past_std = df["surprise"].expanding(min_periods=min_history).std().shift(1)
-    df["z"] = df["surprise"] / past_std
+    s_ = df["surprise"]
+    past_scale = pd.Series([1.4826 * (s_.iloc[:i] - s_.iloc[:i].median()).abs().median() if i >= min_history else np.nan
+                            for i in range(len(s_))], index=df.index)
+    df["z"] = s_ / past_scale.replace(0, np.nan)
     df["release_utc"] = [release_time_utc(release_id, d) for d in df["release_date"]]
     df["surprise_basis"] = f"vs {expected} (no free consensus)"
     return df.dropna(subset=["z"]).reset_index(drop=True)

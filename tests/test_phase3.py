@@ -166,3 +166,27 @@ def test_impact_job_end_to_end_on_synthetic_snapshot(tmp_path, monkeypatch):
     assert big < 0.05, f"{big:.1%} of coefficients ≥ 5 on pure noise"
     md = (tmp_path / "out" / "impact_summary.md").read_text()
     assert "Macro Score" in md and "Release events used" in md
+
+
+def test_theory_conflicts_are_flagged_and_half_weighted():
+    from jobs.impact import flag_conflicts, headline
+    cfg = {"releases": [], "state": [{"key": "real_yield_10y", "theory": {"BTC": -1, "Gold": -1}},
+                                     {"key": "spread_10y_2y", "theory": {"BTC": 0, "Gold": 0}}]}
+    rows = [{"indicator": "real_yield_10y", "asset": "BTC", "bucket": "medium", "horizon": "4w", "sample": s_, "coefficient": c}
+            for s_, c in (("full", 0.0), ("recent", 6.9))]
+    rows.append({"indicator": "spread_10y_2y", "asset": "BTC", "bucket": "medium", "horizon": "4w", "sample": "full", "coefficient": 3.0})
+    c = flag_conflicts(pd.DataFrame(rows), cfg)
+    assert c.loc[1, "conflict"] and not c.loc[0, "conflict"] and not c.loc[2, "conflict"]
+    h = headline(c, "BTC", "medium")
+    assert h["real_yield_10y"] == pytest.approx((0 + 6.9 * 0.5) / 2)
+
+
+def test_robust_surprise_scale_survives_an_outlier():
+    v, _, dates = _vintages(n_months=80)
+    ev = events.surprises(v, "cpi", "mom_pct", "mean3", "cpi")
+    base = ev["z"].abs().median()
+    v2 = v.copy()
+    v2.loc[v2["date"] >= dates[30], "value"] *= 0.8  # a COVID-style −20% level shock at month 30
+    ev2 = events.surprises(v2, "cpi", "mom_pct", "mean3", "cpi")
+    later = ev2[ev2["obs_date"] > dates[40]]["z"].abs().median()
+    assert later == pytest.approx(base, rel=0.5)  # later z-scores are not crushed toward 0
