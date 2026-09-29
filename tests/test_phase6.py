@@ -254,8 +254,25 @@ def test_indicator_table_rows_sorted_by_impact_with_surprise_basis(root):
     assert ry.surprise == "-1.2σM" and ry.coef_tag == "w"      # not a release: 4-week move in σ
     assert ry.effect == int(np.sign(ry.coef * -0.6))
     table = asset_report.table_message(f, "BTC")
-    assert table.count("<pre>") == -(-len(rows) // asset_report.CHUNK_ROWS)
-    assert "بازده واقعی ۱۰ ساله" in table and "DFII10" in table
+    assert table.count("<pre>") == 2 * -(-len(rows) // asset_report.CHUNK_ROWS)  # two stacked tables
+    assert "• بازده واقعی ۱۰ ساله (TIPS) — DFII10" in table  # Persian names in the key, outside the monospace blocks
+
+
+def test_tables_are_narrow_with_a_divider_and_aligned_columns(root):
+    import html
+    import re
+
+    f = facts_mod.load(root)
+    for asset in ("BTC", "Gold"):
+        for text in (asset_report.asset_message(f, asset, NOW), asset_report.table_message(f, asset)):
+            for block in re.findall(r"<pre>(.*?)</pre>", text, re.S):
+                lines = [html.unescape(ln).lstrip("\u200e") for ln in block.split("\n")]
+                assert max(map(len, lines)) <= asset_report.TABLE_WIDTH
+                assert set(lines[1]) == {"-"} and len(lines[1]) == len(lines[0])  # divider under the header
+                assert len({len(ln) for ln in lines}) == 1  # fixed-width, right-aligned columns
+                assert not re.search("[\u0600-\u06FF]", block)  # no Persian inside a table
+            assert "\n\n<pre>" in text and "</pre>\n\n" in text  # blank lines around every block
+    assert asset_report.nz("-0.0M") == "0.0M" and asset_report.nz("-0.5w") == "-0.5w" and asset_report.nz("+0.40%/m") == "+0.40%/m"
 
 
 def test_no_signal_is_explained_in_plain_language(root):

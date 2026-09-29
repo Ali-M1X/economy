@@ -9,6 +9,7 @@ indicator name sits on its own line above each data line.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import numpy as np
@@ -23,7 +24,7 @@ from reports.messages import ASSET_FA, DISCLAIMER, PREPOS_STATUS_FA, dashboard_l
 SCORE_GATE = 15  # |medium Macro Score| a trade signal needs (jobs.signals.MACRO_THRESHOLD)
 EDGE_TRADES = 30  # jobs.signals.MIN_EDGE_TRADES
 TOP_ROWS = 8
-CHUNK_ROWS = 10
+CHUNK_ROWS = 14
 HORIZONS = (("short", "۲۴ ساعت"), ("medium", "۴ هفته"), ("long", "۶ ماه"))
 CONF_FA = {"high": "زیاد", "medium": "متوسط", "low": "کم"}
 CONF_CODE = {"high": "H", "medium": "M", "low": "L"}
@@ -260,40 +261,72 @@ def indicator_rows(f: Facts, asset: str) -> list[Row]:
         if k is not None and x is not None and abs(k) >= 0.5 and abs(x) >= 0.05:
             eff = int(np.sign(k * x))
         value, change = _value_change(f, key, rels.get(key), states.get(key), meta)
-        ticker = TICKER.get(key) or (meta.source_id if meta else key)
+        ticker = TICKER.get(key) or (meta.source_id if meta else key).lstrip("^")
         rows.append(Row(key, ind_name(key), ticker, value, change, surprise, k, "w" if in_state else "d", eff,
                         conf, x))
     return sorted(rows, key=lambda r: -abs(r.coef) if r.coef is not None else 1)
 
 
-TABLE_HEAD = f"{'':3}{'Value':>10}{'Chg':>9}{'Surp':>8}{'Coef':>7} D C"
+TABLE_WIDTH = 32  # characters per line; fits Telegram's monospace font on a phone without wrapping
+TICKER_W = 8
 
 
-def _row_lines(i: int, r: Row) -> list[str]:
-    coef = "—" if r.coef is None else f"{r.coef:+.1f}{r.coef_tag}"
-    d = {1: "▲", -1: "▼", 0: "·"}[r.effect]
-    return [f"{i}. {r.ticker} · {r.name_fa}",  # ticker first: the line stays left-to-right, the Persian name follows
-            f"{'':3}{r.value:>10}{r.change:>9}{r.surprise:>8}{coef:>7} {d} {CONF_CODE.get(r.conf, '-')}"]
+def _pre(lines: list[str]) -> str:
+    # a left-to-right mark opens every line, so clients that pick each line's direction from its first strong
+    # character keep the columns left-to-right even under a right-to-left message
+    return "<pre>" + esc("\n".join(LRM + ln for ln in lines)) + "</pre>"
 
 
-def table_blocks(rows: list[Row], start: int = 1) -> list[str]:
-    """<pre> blocks of at most CHUNK_ROWS rows each (the Telegram splitter cuts only between blocks)."""
-    out = []
-    for c in range(0, len(rows), CHUNK_ROWS):
-        lines = [TABLE_HEAD]
-        for j, r in enumerate(rows[c:c + CHUNK_ROWS], start + c):
-            lines += _row_lines(j, r)
-        # a left-to-right mark opens every line, so clients that pick each line's direction from its first strong
-        # character keep the columns left-to-right even under a right-to-left message
-        out.append("<pre>" + esc("\n".join(LRM + ln for ln in lines)) + "</pre>")
-    return out
+def _table(head: str, body: list[str]) -> list[str]:
+    """Header, a dashed divider, then the rows — split into stacked blocks of CHUNK_ROWS so a Telegram message never
+    cuts through a block (the splitter only cuts between blocks)."""
+    rule = "-" * len(head)
+    return [_pre([head, rule, *body[c:c + CHUNK_ROWS]]) for c in range(0, len(body), CHUNK_ROWS)]
 
 
-TABLE_LEGEND = ("ستون‌ها: Value = آخرین مقدار · Chg = تغییر نسبت به انتشار قبلی (برای داده‌های روزانه: نسبت به ۴ هفته قبل) · "
-                "Surp = شگفتی بر حسب σ؛ T = نسبت به روند (میانگین انتشارهای قبلی)، P = نسبت به مقدار قبلی — اجماع "
-                "تحلیلگران رایگان در دسترس نیست؛ M = حرکت ۴ هفته‌ی شاخص نسبت به نوسان عادی‌اش (شاخص انتشاری نیست) · "
-                "Coef = ضریب اثر روی همین دارایی، از −۱۰ تا +۱۰ (w = اثر ۴ هفته، d = اثر ۲۴ ساعت پس از انتشار) · "
-                "D = اثر فعلی (▲ صعودی، ▼ نزولی، · ناچیز) · C = اطمینان ضریب (H زیاد، M متوسط، L کم)")
+_SIGNED_ZERO = re.compile(r"[+-](?=0(?:\.0+)?(?![\d.,]))")
+
+
+def nz(cell: str) -> str:
+    """Drop the sign of a value that rounds to zero ("-0.0M" → "0.0M")."""
+    return _SIGNED_ZERO.sub("", cell)
+
+
+def effect_table(rows: list[Row]) -> list[str]:
+    """Table 1 — what decides: coefficient, current move, confidence, implied direction now."""
+    head = f"{'Ticker':<{TICKER_W}}{'Coef':>7}{'Move':>7}{'C':>2}{'D':>2}"
+    body = [f"{r.ticker[:TICKER_W]:<{TICKER_W}}{nz('—' if r.coef is None else f'{r.coef:+.1f}{r.coef_tag}'):>7}"
+            f"{nz(r.surprise.replace('σ', '')):>7}{CONF_CODE.get(r.conf, '-'):>2}{ {1: '▲', -1: '▼', 0: '·'}[r.effect]:>2}"
+            for r in rows]
+    return _table(head, body)
+
+
+def value_table(rows: list[Row]) -> list[str]:
+    """Table 2 — the latest figures behind the moves."""
+    head = f"{'Ticker':<{TICKER_W}}{'Value':>10}{'Chg':>9}"
+    body = [f"{r.ticker[:TICKER_W]:<{TICKER_W}}{nz(r.value):>10}{nz(r.change):>9}" for r in rows]
+    return _table(head, body)
+
+
+def names_key(rows: list[Row]) -> str:
+    return "\n".join(f"• {esc(r.name_fa)} — {esc(r.ticker)}" for r in rows)
+
+
+EFFECT_LEGEND = "\n".join([
+    "• Coef = ضریب اثر روی همین دارایی، از −۱۰ تا +۱۰ (w: اثر ۴ هفته، d: اثر ۲۴ ساعت پس از انتشار)",
+    "• Move = حرکت فعلی بر حسب σ — T: شگفتی نسبت به روند، P: نسبت به مقدار قبلی، M: حرکت ۴ هفته (اجماع رایگان در دسترس نیست)",
+    "• C = اطمینان ضریب (H زیاد، M متوسط، L کم) · D = اثر فعلی (▲ صعودی، ▼ نزولی، · ناچیز)"])
+VALUE_LEGEND = "• Value = آخرین مقدار · Chg = تغییر نسبت به انتشار قبلی (داده‌های روزانه: نسبت به ۴ هفته قبل)"
+
+
+def tables_section(rows: list[Row], asset: str, title: str) -> str:
+    """Heading → legend → table, for both tables, then the name key; blocks separated by blank lines."""
+    name = ASSET_FA[asset]
+    parts = [title,
+             f"<b>جدول ۱ — اثر بر {name}</b> (مرتب بر اساس قدر مطلق ضریب)", EFFECT_LEGEND, *effect_table(rows),
+             "<b>جدول ۲ — آخرین مقدارها</b>", VALUE_LEGEND, *value_table(rows),
+             "<b>نام شاخص‌ها</b>\n" + names_key(rows)]
+    return "\n\n".join(parts)
 
 
 # ───────────────────────────── causal chain (plain sentences) ─────────────────────────────
@@ -570,9 +603,9 @@ def asset_message(f: Facts, asset: str, now: pd.Timestamp, chain: list[str] | No
     L += ["", "<b>🔗 زنجیره‌ی علّی — چرا این امتیاز</b>"]
     L += [f"{i}. {s}" for i, s in enumerate(chain or chain_sentences(f, asset, now), 1)]
     shown = [r for r in rows if r.coef is not None][:TOP_ROWS]
-    L += ["", f"<b>📋 مؤثرترین شاخص‌ها برای {ASSET_FA[asset]}</b> ({num(len(shown), '{:.0f}')} ردیف از "
-              f"{num(len(rows), '{:.0f}')}؛ مرتب بر اساس قدر مطلق ضریب اثر؛ جدول کامل در پیام بعد)", TABLE_LEGEND]
-    out = "\n".join(L) + "\n\n" + "\n\n".join(table_blocks(shown))
+    title = (f"<b>📋 مؤثرترین شاخص‌ها برای {ASSET_FA[asset]}</b> — {num(len(shown), '{:.0f}')} از "
+             f"{num(len(rows), '{:.0f}')} شاخص؛ جدول کامل در پیام بعد")
+    out = "\n".join(L) + "\n\n" + tables_section(shown, asset, title) + "\n"
     L = ["", *signals_section(f, asset, names)]
     pp = prepos_section(f, asset)
     if pp:
@@ -583,9 +616,8 @@ def asset_message(f: Facts, asset: str, now: pd.Timestamp, chain: list[str] | No
 
 def table_message(f: Facts, asset: str) -> str:
     rows = indicator_rows(f, asset)
-    head = (f"📋 <b>جدول کامل اثر شاخص‌ها بر {ASSET_FA[asset]}</b> ({num(len(rows), '{:.0f}')} شاخص؛ مرتب بر اساس "
-            f"قدر مطلق ضریب اثر)\n{TABLE_LEGEND}")
-    return head + "\n\n" + "\n\n".join(table_blocks(rows)) + "\n\n" + DISCLAIMER
+    title = f"📋 <b>جدول کامل اثر شاخص‌ها بر {ASSET_FA[asset]}</b> — {num(len(rows), '{:.0f}')} شاخص"
+    return tables_section(rows, asset, title) + "\n\n" + DISCLAIMER
 
 
 def overview_message(f: Facts, now: pd.Timestamp, trigger: str | None = None, weekly: bool = False) -> str:
