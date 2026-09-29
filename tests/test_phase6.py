@@ -217,7 +217,7 @@ def test_report_is_split_into_overview_one_message_per_asset_tables_and_glossary
             assert part in txt, (name, part)
     assert "PAXG" not in btc and "طلا" not in btc.split("جمع‌بندی")[0].replace("طلا / XAU", "")
     # scores carry their scale and a reading
-    assert "+18</b> از ±۱۰۰ → صعودی متوسط" in btc and "−۱۰۰ (کاملاً نزولی) تا +۱۰۰" in btc
+    assert "+18</b> از ±۱۰۰ → صعودی متوسط" in btc and "(از −۱۰۰ تا +۱۰۰؛ آستانه‌ی سیگنال ±۱۵)" in btc
     # the shared context lives in the overview only
     assert "موضع فدرال" in ov and "−۱۰۰ (کاملاً انبساطی)" in ov and "موضع فدرال" not in btc
     assert "شگفتی +1.8σ (متوسط)" in ov and "نسبت به روند (میانگین ۳ انتشار قبلی)" in ov
@@ -229,10 +229,10 @@ def test_report_is_split_into_overview_one_message_per_asset_tables_and_glossary
 def test_gold_message_separates_comex_gold_from_paxg(root):
     f = facts_mod.load(root)
     gold = plain(asset_report.asset_message(f, "Gold", NOW))
-    comex = next(ln for ln in gold.splitlines() if ln.startswith("• طلای واقعی — COMEX GC=F"))
-    paxg = next(ln for ln in gold.splitlines() if ln.startswith("• PAXG — توکن طلا"))
-    assert "4,100.00" in paxg and "پایین‌تر از GC=F" in paxg or "بالاتر از GC=F" in paxg
-    assert comex != paxg and "مبنای محاسبات" in gold and "(بر پایه‌ی PAXG)" in gold
+    comex = next(ln for ln in gold.splitlines() if ln.startswith("• طلای واقعی (COMEX GC=F"))
+    paxg = next(ln for ln in gold.splitlines() if ln.startswith("• PAXG (نماینده‌ی بلادرنگ)"))
+    assert "4,100.0" in paxg and ("پایین‌تر از GC=F" in paxg or "بالاتر از GC=F" in paxg)
+    assert comex != paxg and "• مبنا: امتیاز کلان ۴ هفته و ۶ ماه ← GC=F" in gold and "(بر پایه‌ی PAXG)" in gold
 
 
 def test_messages_fit_telegram_and_never_split_a_table(root):
@@ -255,7 +255,7 @@ def test_indicator_table_rows_sorted_by_impact_with_surprise_basis(root):
     assert ry.surprise == "-1.2σM" and ry.coef_tag == "w"      # not a release: 4-week move in σ
     assert ry.effect == int(np.sign(ry.coef * -0.6))
     table = asset_report.table_message(f, "BTC")
-    assert table.count("<pre>") == 2 * -(-len(rows) // asset_report.CHUNK_ROWS)  # two stacked tables
+    assert table.count("<pre>") == -(-len(rows) // asset_report.CHUNK_ROWS)  # one row per indicator
     assert "• بازده واقعی ۱۰ ساله (TIPS) — DFII10" in table  # Persian names in the key, outside the monospace blocks
 
 
@@ -280,9 +280,9 @@ def test_no_signal_is_explained_in_plain_language(root):
     f = facts_mod.load(root)
     gold = plain(asset_report.asset_message(f, "Gold", NOW))
     assert "ستاپ فعالی وجود ندارد" not in gold
-    assert "سیگنالی صادر نشد. به زبان ساده:" in gold
-    assert "شرط کلان: امتیاز کلان ۴ هفته باید دست‌کم ±۱۵" in gold and "الان -6 است" in gold
-    assert "برتری اثبات‌شده برای خرید: 100 معامله" in gold
+    assert "سیگنالی صادر نشد:" in gold and "• ستاپ تکنیکال: در کندل‌های اخیر ورودی نداده است" in gold
+    assert "• شرط کلان (±۱۵): الان -6 → برقرار نیست" in gold
+    assert "خرید +0.00R (زیان‌ده)" in gold and "100 معامله" not in gold  # trade counts only when under 30
 
 
 def test_conclusion_levels_follow_where_the_price_is():
@@ -309,9 +309,9 @@ def test_score_readings_have_bands():
 def test_chain_sentences_state_cause_and_effect(root):
     f = facts_mod.load(root)
     s = [plain(x) for x in asset_report.chain_sentences(f, "BTC", NOW)]
-    assert any(x.startswith("شاخص قیمت مصرف‌کننده (CPI) (تغییر ماهانه (٪)) بالاتر از انتظار آمد: 0.42 در برابر 0.25") for x in s)
+    assert any(x.startswith("شاخص قیمت مصرف‌کننده (CPI) بالاتر از انتظار آمد (0.42 در برابر 0.25؛ شگفتی متوسط)") for x in s)
     ry = next(x for x in s if x.startswith("بازده واقعی ۱۰ ساله"))
-    assert "پایین آمده است" in ry and "امتیاز ۴ هفته را 8.0 واحد بالا می‌برد" in ry and "←" not in ry
+    assert "پایین آمده است" in ry and "حدود 8 واحد امتیاز ۴ هفته را بالا می‌برد" in ry and "←" not in ry
 
 
 def test_headsup_lists_tomorrows_releases_only(root):
@@ -654,3 +654,38 @@ def test_decision_summary_falls_back_to_flagged_news_for_this_asset(root):
     f.news = pd.DataFrame()
     quiet = bare("\n".join(asset_report.decision_summary(f, "Gold", NOW)))
     assert "رویداد تازه‌ای ثبت نشده" in quiet
+
+
+def test_body_is_trimmed_to_decision_relevant_numbers(root):
+    f = facts_mod.load(root)
+    for asset in ("BTC", "Gold"):
+        msg = asset_report.asset_message(f, asset, NOW, trigger="انتشار CPI")
+        body = bare(msg.split("━━━━━━━━━━━━━━", 1)[1])
+        chain = body.split("زنجیره‌ی علّی")[1].split("مؤثرترین شاخص‌ها")[0]
+        assert "ضریب" not in chain and "σ" not in chain and "اطمینان" not in chain  # narrative, not a data dump
+        assert "آستانه ±۱٫۵" not in body and "p =" not in body and "نرخ برد" not in body
+        blocks = re.findall(r"<pre>(.*?)</pre>", msg, re.S)
+        assert len(blocks) == 1 and "Chg" not in blocks[0] and "Move" not in blocks[0]  # one collapsed table
+        assert not re.search(r"\d\.\d{3,}", body)  # no redundant precision
+        assert len(telegram.split_message(msg)) == 1  # the whole report now fits one Telegram message
+    btc = bare(asset_report.asset_message(f, "BTC", NOW))
+    assert btc.count("👀 ستاپ") == 1 and "دلایل:" not in btc  # a blocked setup is one line, not a full card
+
+
+def test_live_signal_keeps_its_full_card_and_summary_is_unchanged(root):
+    p = root / "signals.json"
+    sig = json.loads(p.read_text())
+    btc = next(a for a in sig["assets"] if a["asset"] == "BTC")
+    btc["signals"], btc["watchlist"] = [{**btc["watchlist"][0], "blocked_by": []}], []
+    p.write_text(json.dumps(sig))
+    f = facts_mod.load(root)
+    msg = bare(asset_report.asset_message(f, "BTC", NOW))
+    assert "🎯 سیگنال فعال" in msg and "حد ضرر:" in msg and "نرخ برد بک‌تست" in msg  # actionable → full detail
+
+
+def test_flag_marks_unusual_moves_and_curve_inversion():
+    r = asset_report.Row("real_yield_10y", "", "DFII10", "2.83%", "", "", 3.3, "w", 1, "low", 1.0)
+    assert asset_report.flagged(r)
+    assert not asset_report.flagged(asset_report.Row("ust_10y", "", "DGS10", "4.1%", "", "", 3.1, "w", 1, "low", 0.4))
+    assert asset_report.flagged(asset_report.Row("spread_10y_2y", "", "T10Y2Y", "-0.35pp", "", "", 2.5, "w", 0, "low", 0.1))
+    assert asset_report.flagged(asset_report.Row("cpi", "", "CPIAUCSL", "+0.4%/m", "", "", -1.0, "d", 1, "low", 2.3))
