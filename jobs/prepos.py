@@ -79,7 +79,8 @@ def lead_frame(rel: str, targets: pd.DataFrame, vintages: dict) -> pd.DataFrame:
         s["month"] = pd.to_datetime(s["obs_date"]).dt.to_period("M")
         by_month = s.drop_duplicates("month", keep="first").set_index("month")
         for e in targets.itertuples():
-            m = pd.Timestamp(e.obs_date).to_period("M")
+            o = pd.Timestamp(e.obs_date)
+            m = (o.tz_localize(None) if o.tzinfo else o).to_period("M")
             if m in by_month.index:
                 r = by_month.loc[m]
                 avail = pd.Timestamp(r["release_utc"])

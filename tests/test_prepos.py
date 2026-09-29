@@ -258,6 +258,11 @@ def test_binance_archive_parses_metrics_and_funding_with_or_without_header(tmp_p
     mm, ff = ba.load(tmp_path)
     assert len(mm) == 2 and len(ff) == 2
 
+    # a capped run fetches the (few) funding months before the long daily-metrics backlog
+    calls.clear()
+    ba.update(tmp_path / "capped", today=pd.Timestamp("2024-01-03", tz=UTC), max_files=1)
+    assert len(calls) == 1 and "fundingRate-2023-12" in calls[0]
+
 
 def test_okx_funding_and_binance_taker_volume_parsing():
     from collectors import crypto

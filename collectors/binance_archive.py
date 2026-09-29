@@ -75,15 +75,17 @@ def update(archive_dir: Path, symbol: str = "BTCUSDT", today: pd.Timestamp | Non
     idx = json.loads(idx_p.read_text()) if idx_p.exists() else {"metrics": [], "funding": [], "missing": []}
     have, missing = set(idx["metrics"]) | set(idx["funding"]), set(idx["missing"])
     todo = []
-    # daily files appear the next day; newest first so a partial run still covers the recent past
-    for d in pd.date_range(METRICS_START, today - pd.Timedelta(days=1), freq="D")[::-1]:
-        k = f"m:{d:%Y-%m-%d}"
-        if k not in have and not (k in missing and d < today - pd.Timedelta(days=7)):
-            todo.append(("metrics", k, f"{BASE}/daily/metrics/{symbol}/{symbol}-metrics-{d:%Y-%m-%d}.zip"))
+    # funding first (a few dozen monthly files), then daily metrics newest first, so a partial run
+    # still covers the whole funding history and the recent past of open interest
     for m in pd.date_range(FUNDING_START, today - pd.DateOffset(months=1), freq="MS")[::-1]:
         k = f"f:{m:%Y-%m}"
         if k not in have and not (k in missing and m < today - pd.DateOffset(months=2)):
             todo.append(("funding", k, f"{BASE}/monthly/fundingRate/{symbol}/{symbol}-fundingRate-{m:%Y-%m}.zip"))
+    # daily files appear the next day
+    for d in pd.date_range(METRICS_START, today - pd.Timedelta(days=1), freq="D")[::-1]:
+        k = f"m:{d:%Y-%m-%d}"
+        if k not in have and not (k in missing and d < today - pd.Timedelta(days=7)):
+            todo.append(("metrics", k, f"{BASE}/daily/metrics/{symbol}/{symbol}-metrics-{d:%Y-%m-%d}.zip"))
     new = {"metrics": [], "funding": []}
     fetched = 0
     for kind, key, url in todo[:max_files]:
