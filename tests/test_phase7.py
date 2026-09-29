@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -83,8 +85,8 @@ def test_runner_fire_dispatches_and_claims_releases(tmp_path, monkeypatch):
 
 
 def test_output_dir_is_configurable(tmp_path):
-    out = subprocess.run(["python", "-c", "from core.settings import OUTPUT_DIR; from jobs import impact; print(impact.OUT_DIR)"],
-                         env={"MACRO_PULSE_OUTPUT_DIR": str(tmp_path), "PATH": "/usr/bin:/bin", "PYTHONPATH": str(ROOT_DIR)},
+    out = subprocess.run([sys.executable, "-c", "from jobs import impact; print(impact.OUT_DIR)"],
+                         env={**os.environ, "MACRO_PULSE_OUTPUT_DIR": str(tmp_path)},
                          capture_output=True, text=True, cwd=ROOT_DIR)
     assert out.stdout.strip() == str(tmp_path), out.stderr[-500:]
 
