@@ -46,7 +46,7 @@ def no_secrets(monkeypatch, tmp_path):
     monkeypatch.setattr(telegram, "OUTBOX", tmp_path / "outbox")
 
 
-# ── Telegram ─────────────────────────────────────────────────────────────────────
+# ── Telegram ─────────────────────────────────────────────────────────────
 
 def test_split_message_respects_limit_and_blocks():
     text = "\n\n".join(f"<b>بخش {i}</b>\n" + "متن " * 300 for i in range(12))
@@ -200,7 +200,7 @@ def test_writer_accepts_only_numbers_from_the_facts(root, monkeypatch):
     assert writer.explain(f)[1] == "template"
 
 
-# ── messages ─────────────────────────────────────────────────────────────────────
+# ── messages ─────────────────────────────────────────────────────────────
 
 def test_impact_report_and_signals_message(root):
     f = facts_mod.load(root)
@@ -229,7 +229,7 @@ def test_news_alert_escapes_titles():
     assert label("gdelt:reuters.com") == "GDELT · reuters.com"
 
 
-# ── health gate ────────────────────────────────────────────────────────────────
+# ── health gate ──────────────────────────────────────────────────────────
 
 def test_health_ok_on_fresh_snapshot(root):
     assert health.evaluate(root, NOW).ok
@@ -291,7 +291,7 @@ def test_notify_news_alerts_once_and_requests_report(root, tmp_path, monkeypatch
     assert "trigger_report=true" in out.read_text()
 
 
-# ── scheduling ───────────────────────────────────────────────────────────────────
+# ── scheduling ───────────────────────────────────────────────────────────
 
 def workflow_crons() -> list[str]:
     wf = yaml.safe_load((ROOT_DIR / ".github" / "workflows" / "schedule.yml").read_text())
@@ -404,7 +404,7 @@ def test_claude_client_request_and_parsing(monkeypatch):
         srv.shutdown()
 
 
-# ── pre-positioning: plan, alert, notify ───────────────────────────────────────────
+# ── pre-positioning: plan, alert, notify ─────────────────────────────────
 
 def test_prepos_plan_only_runs_when_a_target_release_is_near(tmp_path):
     cpi = [{"event_id": "cpi-x", "release_id": "cpi", "scheduled_utc": NOW + pd.Timedelta(hours=30)}]
@@ -429,8 +429,8 @@ def test_prepos_alert_and_notify_send_only_gated_signals_once(root, tmp_path):
 
 def test_headsup_mentions_prepositioning_status(root):
     f = facts_mod.load(root)
-    f.calendar = pd.DataFrame([{"event_id": f.prepos["live"][0]["event_id"], "release_id": "cpi", "name_fa": "CPI",
-                                "importance": 5, "scheduled_utc": NOW + pd.Timedelta(days=1)}])
+    f.calendar = pd.DataFrame([{"event_id": f.prepos["live"][0]["event_id"], "release_id": "cpi", "name_en": "CPI",
+                                "name_fa": "CPI", "importance": 5, "scheduled_utc": NOW + pd.Timedelta(days=1)}])
     f.prepos["live"] = [dict(r, event_id=f.calendar["event_id"].iloc[0]) for r in f.prepos["live"]]
     txt = plain(messages.headsup(f, NOW) or "")
     assert "پیش‌موقعیت‌گیری" in txt and "سیگنال فعال" in txt and "مسدود" in txt
