@@ -4,6 +4,7 @@ are mocked, time is injected."""
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -550,3 +551,106 @@ def test_impact_job_records_the_latest_surprise_per_indicator():
     out = impact_job.latest_surprises(evs)
     assert out["cpi"]["z"] == 1.2 and out["cpi"]["obs_date"] == "2026-08-01" and out["nonfarm_payrolls"]["actual"] == 142.0
     assert impact_job.latest_surprises(pd.DataFrame()) == {}
+
+
+# ── decision summary (top of each asset message) ─────────────────────────
+
+def _summary(msg: str) -> str:
+    return msg.split("━━━━━━━━━━━━━━", 1)[0]
+
+
+def bare(s: str) -> str:
+    """Text as a reader sees it: no direction isolates, no HTML tags."""
+    return re.sub(r"<[^>]+>", "", plain(s))
+
+
+def test_decision_summary_opens_each_asset_message_and_leaves_the_body_unchanged(root, monkeypatch):
+    f = facts_mod.load(root)
+    for asset, name, other in (("BTC", "بیت‌کوین", "طلا"), ("Gold", "طلا", "بیت‌کوین")):
+        msg = asset_report.asset_message(f, asset, NOW, trigger="انتشار CPI")
+        top = bare(_summary(msg))
+        assert msg.startswith(f"🧭 <b>خلاصه‌ی تصمیم — {name}</b>")
+        lines = [ln for ln in top.strip().splitlines() if ln]
+        assert 5 <= len(lines) <= 8 and all(len(ln) < 260 for ln in lines)
+        for slot in ("• رویداد:", f"• اثر بر {name}:", "• استدلال:", "• جهت محتمل:", "• پیشنهاد موقعیت"):
+            assert slot in top, (asset, slot)
+        assert other not in top  # this asset's data only
+        # the body is exactly what the report was before the summary was added: summary + divider + unchanged body
+        summary = "\n".join(asset_report.decision_summary(f, asset, NOW, "انتشار CPI"))
+        monkeypatch.setattr(asset_report, "decision_summary", lambda *a, **k: [])
+        body = asset_report.asset_message(f, asset, NOW, trigger="انتشار CPI")
+        monkeypatch.undo()
+        assert msg == summary + "\n" + body
+        assert body.startswith("\n━━━━━━━━━━━━━━\n\n" + asset_report.ICON[asset] + " <b>گزارش")
+
+
+def test_decision_summary_uses_the_triggering_release_and_its_effect_on_this_asset(root):
+    f = facts_mod.load(root)
+    top = bare(_summary(asset_report.asset_message(f, "BTC", NOW)))
+    k, _ = asset_report._coef(f, "cpi", "BTC", "24h")
+    assert "رویداد: شاخص قیمت مصرف‌کننده (CPI) بالاتر از انتظار (شگفتی متوسط)" in top
+    if abs(k) >= 1:
+        eff = "صعودی" if k * 1.8 > 0 else "نزولی"
+        assert f"اثر بر بیت‌کوین: {eff}" in top and "در گذشته عدد بالاتر از انتظار برای بیت‌کوین" in top
+    else:  # a historically negligible effect is said plainly, and the reasoning falls back to the top 4-week driver
+        assert "اثر بر بیت‌کوین: ناچیز" in top and "مهم‌ترین عامل ۴ هفته بازده واقعی ۱۰ ساله" in top
+    f.coefs.loc[(f.coefs["indicator"] == "cpi") & (f.coefs["asset"] == "BTC") & (f.coefs["horizon"] == "24h"),
+                "coefficient"] = -4.0  # hotter CPI → BTC down, historically
+    top = bare("\n".join(asset_report.decision_summary(f, "BTC", NOW)))
+    assert "اثر بر بیت‌کوین: نزولی — اثر تاریخی متوسط" in top
+    assert "در گذشته عدد بالاتر از انتظار برای بیت‌کوین منفی بوده، پس این عدد بالاتر نزولی است" in top
+    assert "جهت محتمل: ۴ هفته صعودی — اطمینان متوسط" in top  # medium score +18
+
+
+def test_decision_summary_suggests_no_position_when_the_edge_gate_blocks(root):
+    f = facts_mod.load(root)
+    btc = bare(_summary(asset_report.asset_message(f, "BTC", NOW)))
+    assert "پیشنهاد موقعیت (پیش از انتشار): خرید" in btc  # demo: the CPI pre-release setup passed its gate
+    f.prepos["live"] = [dict(r, status="watchlist") for r in f.prepos["live"]]  # now nothing passes a gate
+    btc = bare(_summary(asset_report.asset_message(f, "BTC", NOW)))  # demo: a setup on the watchlist, no edge
+    assert "پیشنهاد موقعیت: فعلاً هیچ موقعیتی پیشنهاد نمی‌شود — ستاپ تکنیکال هست، اما این قاعده هنوز برتری آماری" in btc
+    gold = bare(_summary(asset_report.asset_message(f, "Gold", NOW)))  # no setup at all
+    assert "فعلاً هیچ موقعیتی پیشنهاد نمی‌شود — قاعده‌ی تکنیکال در حال حاضر ستاپ ورودی نداده است" in gold
+    for top in (btc, gold):  # no price level appears without a passing signal
+        assert "ورود ≈" not in top and "حد ضرر ≈" not in top and "هدف ۱ ≈" not in top
+
+
+def test_decision_summary_gives_the_signal_only_when_it_passed_the_gate(root):
+    p = root / "signals.json"
+    sig = json.loads(p.read_text())
+    btc = next(a for a in sig["assets"] if a["asset"] == "BTC")
+    card = {**btc["watchlist"][0], "blocked_by": [], "confidence": "medium"}
+    btc["signals"], btc["watchlist"] = [card], []
+    p.write_text(json.dumps(sig))
+    f = facts_mod.load(root)
+    f.prepos["live"] = []
+    top = bare(_summary(asset_report.asset_message(f, "BTC", NOW)))
+    line = next(ln for ln in top.splitlines() if ln.startswith("• پیشنهاد موقعیت"))
+    assert "خرید" in line and "ورود ≈ 79,800 تا 80,000" in line and "هدف ۱ ≈ 81,600" in line and "حد ضرر ≈ 78,400" in line
+    # anti-hallucination: every number in the summary is (a rounding of) a number the system computed
+    allowed = {"signal": card, "rounded": [round(v, -2) for v in (*card["entry_zone"], card["targets"][0], card["stop_loss"])],
+               "facts": writer.asset_facts(f, "BTC")}
+    assert writer.unknown_numbers(top, allowed) == []
+    assert "هیچ موقعیتی" not in top
+
+
+def test_decision_summary_has_no_numbers_of_its_own_without_a_signal(root):
+    f = facts_mod.load(root)
+    for asset in ("BTC", "Gold"):
+        top = bare(_summary(asset_report.asset_message(f, asset, NOW, trigger="انتشار CPI")))
+        assert writer.unknown_numbers(top, writer.asset_facts(f, asset)) == []
+
+
+def test_decision_summary_falls_back_to_flagged_news_for_this_asset(root):
+    f = facts_mod.load(root)
+    f.releases = []
+    f.news = pd.DataFrame([{"id": "n1", "title": "Fed emergency cut", "title_fa": "کاهش اضطراری نرخ", "importance": 5,
+                            "published_utc": NOW - pd.Timedelta(hours=2), "btc": "bullish", "gold": "bearish",
+                            "channels": "policy"}])
+    btc = bare("\n".join(asset_report.decision_summary(f, "BTC", NOW)))
+    gold = bare("\n".join(asset_report.decision_summary(f, "Gold", NOW)))
+    assert "رویداد: خبر: کاهش اضطراری نرخ" in btc and "اثر بر بیت‌کوین: صعودی" in btc
+    assert "اثر بر طلا: نزولی" in gold
+    f.news = pd.DataFrame()
+    quiet = bare("\n".join(asset_report.decision_summary(f, "Gold", NOW)))
+    assert "رویداد تازه‌ای ثبت نشده" in quiet

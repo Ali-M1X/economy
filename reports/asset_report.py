@@ -591,12 +591,121 @@ def conclusion(f: Facts, asset: str, now: pd.Timestamp) -> list[str]:
     return L
 
 
+# ───────────────────────────── decision summary (top of each asset message) ─────────────────────────────
+
+def _px(v: float, asset: str) -> str:
+    """Summary-precision price: BTC to the nearest 100, gold to the dollar (the body carries the exact figure)."""
+    return num(round(v, -2) if asset == "BTC" else round(v), "{:,.0f}")
+
+
+def _events(f: Facts, asset: str, now: pd.Timestamp, trigger: str | None) -> list[dict]:
+    """What triggered this report, most impactful first: releases of the last 24 h ranked by |coefficient × surprise|
+    for this asset, then flagged news (importance ≥ 4) with its classification for this asset."""
+    cfg = indicators_cfg()
+    chans = {i["key"]: i.get("channels", []) for i in cfg["releases"]}
+    out = []
+    for r in f.releases:
+        if pd.Timestamp(r["release_utc"]) < now - pd.Timedelta(hours=24):
+            continue
+        k, _ = _coef(f, r["indicator"], asset, "24h")
+        out.append({"kind": "release", "r": r, "k": k, "channels": chans.get(r["indicator"], []),
+                    "rank": abs((k or 0) * r["z"])})
+    out.sort(key=lambda e: -e["rank"])
+    col = "btc" if asset == "BTC" else "gold"
+    news = f.important_news(now - pd.Timedelta(hours=24))
+    for n in (news.head(2).to_dict("records") if not news.empty else []):
+        out.append({"kind": "news", "n": n, "effect": n.get(col)})
+    return out[:2]
+
+
+def _no_position_reason(x: dict) -> str:
+    wl = x.get("watchlist") or []
+    if wl:
+        why = " ".join(wl[0].get("blocked_by") or [])
+        if "edge" in why:
+            return "ستاپ تکنیکال هست، اما این قاعده هنوز برتری آماری اثبات‌شده‌ی خارج از نمونه ندارد"
+        return "ستاپ تکنیکال هست، اما شواهد کلان ۴ هفته هم‌جهت و به اندازه‌ی کافی قوی نیست"
+    med = (x.get("macro") or {}).get("medium")
+    tail = "، و شواهد کلان هم برای تأیید سیگنال کافی نیست" if med is None or abs(med) < SCORE_GATE else ""
+    return "قاعده‌ی تکنیکال در حال حاضر ستاپ ورودی نداده است" + tail
+
+
+def decision_summary(f: Facts, asset: str, now: pd.Timestamp, trigger: str | None = None) -> list[str]:
+    """Compact top section: trigger, impact on this asset, reasoning, probable direction, position (edge-gated).
+    Template only — every figure is a rounded copy of a number the system computed; the body below has the exact values."""
+    name = ASSET_FA[asset]
+    x, m = f.asset(asset), f.macro.get(asset) or {}
+    ch = channel_fa(indicators_cfg())
+    evs = _events(f, asset, now, trigger)
+    L = [f"🧭 <b>خلاصه‌ی تصمیم — {name}</b>"]
+    # 1. trigger
+    names = []
+    for e in evs:
+        if e["kind"] == "release":
+            r = e["r"]
+            names.append(f"{esc(ind_name(r['indicator']))} {'بالاتر' if r['z'] > 0 else 'پایین‌تر'} از انتظار "
+                         f"(شگفتی {z_reading(r['z'])})")
+        else:
+            names.append(f"خبر: {esc(e['n'].get('title_fa') or e['n'].get('title'))}")
+    if names:
+        L.append("• رویداد: " + "؛ ".join(names))
+    elif trigger:
+        L.append(f"• رویداد: {esc(trigger)}")
+    else:
+        L.append("• رویداد: رویداد تازه‌ای ثبت نشده؛ این گزارش دوره‌ای است")
+    # 2. impact on this asset + 3. reasoning (the same logic as the causal chain)
+    top = evs[0] if evs else None
+    if top and top["kind"] == "release" and top["k"] is not None and abs(top["k"]) >= 1:
+        r, k = top["r"], top["k"]
+        eff = "صعودی" if k * r["z"] > 0 else "نزولی"
+        L.append(f"• اثر بر {name}: {eff} — اثر تاریخی {coef_reading(k)}")
+        path = "، ".join(f"«{esc(ch.get(c, c))}»" for c in top["channels"][:2])
+        L.append(f"• استدلال: {'از مسیر ' + path + '؛ ' if path else ''}در گذشته عدد بالاتر از انتظار برای {name} "
+                 f"{'مثبت' if k > 0 else 'منفی'} بوده، پس این عدد {'بالاتر' if r['z'] > 0 else 'پایین‌تر'} {eff} است.")
+    elif top and top["kind"] == "news" and top.get("effect") in ("bullish", "bearish"):
+        eff = "صعودی" if top["effect"] == "bullish" else "نزولی"
+        L.append(f"• اثر بر {name}: {eff} (طبقه‌بندی خودکار خبر)")
+        chans = [c for c in str(top["n"].get("channels") or "").split("|") if c]
+        L.append("• استدلال: " + (f"از مسیر {'، '.join('«' + esc(ch.get(c, c)) + '»' for c in chans[:2])}."
+                                   if chans else "بر پایه‌ی تیتر خبر؛ پیش از تصمیم متن کامل را بخوانید."))
+    else:
+        if top:
+            L.append(f"• اثر بر {name}: ناچیز — این رویداد در گذشته اثر محسوسی بر {name} نداشته است")
+        tc = ((m.get("medium") or {}).get("top") or [])
+        t = next((t for t in tc if abs(t["contribution"]) >= 0.5), None)
+        if t:
+            L.append(f"• استدلال: مهم‌ترین عامل ۴ هفته {esc(ind_name(t['indicator']))} است که "
+                     f"{'بالا رفته' if t['state'] > 0 else 'پایین آمده'} و برای {name} "
+                     f"{'مثبت' if t['contribution'] > 0 else 'منفی'} ارزیابی می‌شود.")
+        else:
+            L.append(f"• استدلال: هیچ شاخصی الان سهم محسوسی در امتیاز {name} ندارد.")
+    # 4. probable direction (the system's Macro Scores, as words)
+    sh, med = (m.get("short") or {}).get("score"), (m.get("medium") or {}).get("score")
+    near = f"۲۴ ساعت {score_direction(sh)}، " if sh is not None else ""
+    L.append(f"• جهت محتمل: {near}۴ هفته <b>{score_direction(med)}</b> — اطمینان {score_confidence(med)}")
+    # 5. position — only a signal that passed the out-of-sample edge gate
+    sig = (x.get("signals") or [None])[0]
+    pre = next((r for r in (f.prepos or {}).get("live", []) if r.get("asset") == asset and r.get("status") == "signal"
+                and r.get("entry") is not None), None)
+    if sig:
+        L.append(f"• پیشنهاد موقعیت: <b>{word(sig['direction'])}</b> · ورود ≈ {_px(min(sig['entry_zone']), asset)} تا "
+                 f"{_px(max(sig['entry_zone']), asset)} · هدف ۱ ≈ {_px(sig['targets'][0], asset)} · حد ضرر ≈ "
+                 f"{_px(sig['stop_loss'], asset)} · اطمینان {word(sig['confidence'])} (جزئیات در بخش سیگنال)")
+    elif pre:
+        L.append(f"• پیشنهاد موقعیت (پیش از انتشار): <b>{word(pre['direction'])}</b> · ورود ≈ {_px(pre['entry'], asset)} · "
+                 f"هدف ۱ ≈ {_px(pre['targets'][0], asset)} · حد ضرر ≈ {_px(pre['stop_loss'], asset)} (پیام جداگانه)")
+    else:
+        L.append(f"• پیشنهاد موقعیت: <b>فعلاً هیچ موقعیتی پیشنهاد نمی‌شود</b> — {_no_position_reason(x)}.")
+    return L
+
+
 # ───────────────────────────── messages ─────────────────────────────
 
 def asset_message(f: Facts, asset: str, now: pd.Timestamp, chain: list[str] | None = None, trigger: str | None = None,
                   names: dict | None = None) -> str:
     rows = indicator_rows(f, asset)
-    L = [f"{ICON[asset]} <b>گزارش {ASSET_FA[asset]} ({'BTC' if asset == 'BTC' else 'طلا / XAU'})</b> — {tehran(now)} (تهران)"]
+    L = [*decision_summary(f, asset, now, trigger), "", "━━━━━━━━━━━━━━", "",
+         f"{ICON[asset]} <b>گزارش {ASSET_FA[asset]} ({'BTC' if asset == 'BTC' else 'طلا / XAU'})</b> — {tehran(now)} (تهران)"]
     if trigger:
         L.append(f"علت گزارش: {esc(trigger)}")
     L += ["", *price_block(f, asset), "", *scores_section(f, asset)]
