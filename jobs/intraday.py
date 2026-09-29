@@ -16,7 +16,7 @@ from pathlib import Path
 import pandas as pd
 
 from collectors import news
-from core.settings import ROOT
+from core.settings import OUTPUT_DIR
 from jobs import classify, notify
 from llm import claude
 
@@ -24,7 +24,7 @@ from llm import claude
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--state")
-    ap.add_argument("--root", default=str(ROOT / "output"))
+    ap.add_argument("--root", default=str(OUTPUT_DIR))
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
     state, root = (Path(args.state) if args.state else None), Path(args.root)

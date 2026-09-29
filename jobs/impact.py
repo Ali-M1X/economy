@@ -18,13 +18,13 @@ import pandas as pd
 import yaml
 
 from core.registry import load_registry
-from core.settings import ROOT
+from core.settings import OUTPUT_DIR, ROOT
 from core.timeutil import utcnow
 from features import pit
 from jobs.features import REGIME_KEYS, load_cache
 from models import events, impact, regime
 
-OUT_DIR = ROOT / "output"
+OUT_DIR = OUTPUT_DIR
 BTC_START = pd.Timestamp("2017-01-01")
 GOLD_START = pd.Timestamp("2000-01-01")
 RECENT_YEARS = 3

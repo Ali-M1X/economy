@@ -14,6 +14,8 @@ except ImportError:  # pragma: no cover
     pass
 
 ROOT = Path(__file__).resolve().parent.parent
+# where jobs write the snapshot + analysis outputs (the VPS runner points each run at its own folder)
+OUTPUT_DIR = Path(os.environ.get("MACRO_PULSE_OUTPUT_DIR") or ROOT / "output")
 
 
 def _env(name: str, default: str | None = None) -> str | None:

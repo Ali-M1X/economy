@@ -22,14 +22,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from core.settings import ROOT
+from core.settings import OUTPUT_DIR
 from core.timeutil import TEHRAN, utcnow
 from signals import engine
 from technicals.indicators import atr, macd, resample, rsi, trend
 from technicals.levels import liquidation_clusters, orderbook_walls, volume_profile
 from technicals.structure import structure
 
-OUT_DIR = ROOT / "output"
+OUT_DIR = OUTPUT_DIR
 MACRO_THRESHOLD = 15.0
 MIN_EDGE_TRADES = 30  # a live signal also needs that side's out-of-sample average R > 0 over ≥ 30 trades
 DISCLAIMER_FA = "این تحلیل صرفاً جنبه آموزشی و اطلاعاتی دارد و توصیه مالی یا پیشنهاد خرید و فروش نیست."

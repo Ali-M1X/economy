@@ -2,8 +2,18 @@
 
 US macro, liquidity, rates, credit, dollar, intermarket and commodity data → measured impact on **Bitcoin** and **Gold**, with a Persian dashboard, causal reports and backtested trade signals.
 
-> Status: **Phase 6 done** — collectors + validation (1); features, FedWatch, Fed Stance Score, curve inversions, regimes (2); impact coefficients, Macro Score, backtest engine (3); technicals, liquidity levels and gated trade signals (4); Persian RTL Streamlit dashboard with light/dark mode (5); Telegram messages, Claude explanations and classification, scheduling and health checks (6). See `DATA_GAPS.md`.
-> A full Persian setup guide arrives in Phase 7.
+> **راهنمای فارسی راه‌اندازی: [README.fa.md](README.fa.md)** (FRED key, Telegram bot, Claude key, GitHub Secrets, Streamlit Cloud, Supabase, VPS checklist, paid alternatives).
+>
+> Status: **all 7 phases done**:
+> 1. collectors + validation;
+> 2. features, FedWatch, Fed Stance Score, curve inversions, regimes;
+> 3. impact coefficients, Macro Score, backtest engine;
+> 4. technicals, liquidity levels and gated trade signals;
+> 5. Persian RTL Streamlit dashboard with light/dark mode;
+> 6. Telegram messages, Claude explanations and classification, scheduling and health checks;
+> 7. Docker / docker-compose with the same schedule for a VPS, and the Persian setup guide.
+>
+> See `DATA_GAPS.md`.
 
 ## Layout
 | dir | purpose |
@@ -111,6 +121,15 @@ GitHub Actions limits to know:
 The same jobs will run on a VPS via docker-compose (Phase 7). Run state (reported releases, alerted news, last health warning) is kept in the Actions cache.
 
 Secrets used: `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`. Optional variables: `CLAUDE_MODEL`, `DASHBOARD_URL`. The easiest end-to-end test is a manual run of `schedule` with mode `report`, `weekly`, `headsup` or `intraday`.
+
+## VPS / Docker (Phase 7)
+`docker compose up -d --build` starts two services from one image:
+- **`scheduler`** — `jobs.runner`: APScheduler with the exact cron strings of `schedule.yml`, imported from `jobs.scheduler`. Weekdays are converted to names, because APScheduler 3 numbers Monday = 0.
+- **`dashboard`** — Streamlit, bound to `127.0.0.1:8501`; put an HTTPS reverse proxy in front.
+
+Each full run (`jobs.pipeline`) writes into `/data/runs/<ts>/`. When the analysis succeeds, the `/data/current` symlink is swapped atomically, so the dashboard never reads a half-written snapshot. The last 3 runs are kept, and run state lives in `/data/state`.
+
+Configuration comes from `.env` (see `.env.example`). Database storage stays off unless `ENABLE_DB_STORAGE=true`. The full checklist is in [README.fa.md](README.fa.md).
 
 ## Workflows
 | workflow | what it does | database |

@@ -25,13 +25,12 @@ import pandas as pd
 from collectors import calendar, crypto, fed, fred, futures, news, yahoo
 from collectors.base import SeriesResult
 from collectors.series import fetch_series
-from core.http import SourceError
 from core.registry import SeriesMeta, load_registry
-from core.settings import ROOT, get_settings
+from core.settings import OUTPUT_DIR, get_settings
 from core.timeutil import utcnow
 from validation.checks import CheckResult, check_cross, overall, staleness_days, validate_series
 
-OUT_DIR = ROOT / "output"
+OUT_DIR = OUTPUT_DIR
 
 
 @dataclass
@@ -567,7 +566,6 @@ def cache_price_history(d: Path) -> list[ProbeReport]:
 
 def store_all(registry, series, results, stash, started) -> dict:
     """Persist everything fetched in this run, then read it back to prove it landed."""
-    from db import schema
     from db.store import describe_target, engine, init_db, save_observations, save_series_meta, save_vintages, table_counts
 
     rep: dict = {"target": None, "stored": {}, "error": None}

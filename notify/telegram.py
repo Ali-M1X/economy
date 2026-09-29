@@ -14,11 +14,11 @@ from dataclasses import dataclass
 
 import requests
 
-from core.settings import ROOT, get_settings
+from core.settings import OUTPUT_DIR, get_settings
 
 API = "https://api.telegram.org/bot{token}/sendMessage"
 LIMIT = 4096
-OUTBOX = ROOT / "output" / "outbox"
+OUTBOX = OUTPUT_DIR / "outbox"
 
 
 class TelegramError(RuntimeError):

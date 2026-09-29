@@ -1,0 +1,32 @@
+# VPS deployment: the same schedule as .github/workflows/schedule.yml, plus the dashboard.
+#   cp .env.example .env   # fill in the keys
+#   docker compose up -d --build
+#   docker compose logs -f scheduler
+# Data lives in the named volume `macro-pulse-data` (/data): runs/<ts>/, current → latest good run, state/.
+services:
+  scheduler:
+    build: .
+    image: macro-pulse:latest
+    command: ["python", "-m", "jobs.runner", "--data", "/data", "--run-now", "headsup"]
+    env_file: .env
+    volumes: [macro-pulse-data:/data]
+    restart: unless-stopped
+    healthcheck:
+      # alive = a cron fired in the last 30 minutes (the news scan fires every 15)
+      test: ["CMD", "python", "-c", "import os,time,sys; p='/data/heartbeat'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p)<1800 else 1)"]
+      interval: 5m
+      start_period: 30m
+
+  dashboard:
+    build: .
+    image: macro-pulse:latest
+    depends_on: [scheduler]
+    environment:
+      MACRO_PULSE_SNAPSHOT_DIR: /data/current
+    env_file: .env
+    volumes: [macro-pulse-data:/data:ro]
+    ports: ["127.0.0.1:8501:8501"]   # put a reverse proxy (Caddy/nginx with HTTPS) in front; see README.fa.md
+    restart: unless-stopped
+
+volumes:
+  macro-pulse-data:

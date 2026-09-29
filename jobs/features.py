@@ -16,7 +16,7 @@ from pathlib import Path
 import pandas as pd
 
 from core.registry import load_registry
-from core.settings import ROOT
+from core.settings import OUTPUT_DIR
 from core.timeutil import utcnow
 from db import schema
 from db.store import engine, init_db, load_all_series, load_table, load_vintages, upsert
@@ -24,7 +24,7 @@ from features import curve, derived, fed_stance, fedwatch, pit
 from features.transforms import as_series
 from models import regime
 
-OUT_DIR = ROOT / "output"
+OUT_DIR = OUTPUT_DIR
 REGIME_KEYS = ["philly_fed_activity", "empire_state_activity", "spread_10y_3m", "baa_10y_spread", "nfci",
                "initial_claims", "nonfarm_payrolls", "m2", "fed_balance_sheet", "core_cpi"]
 
