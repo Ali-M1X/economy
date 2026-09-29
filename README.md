@@ -2,7 +2,7 @@
 
 US macro, liquidity, rates, credit, dollar, intermarket and commodity data → measured impact on **Bitcoin** and **Gold**, with a Persian dashboard, causal reports and backtested trade signals.
 
-> Status: **Phase 3 done** — collectors + validation (1); features, FedWatch, Fed Stance Score, curve inversions, regimes (2); impact coefficients, Macro Score and backtest engine (3). See `DATA_GAPS.md`.
+> Status: **Phase 4 done** — collectors + validation (1); features, FedWatch, Fed Stance Score, curve inversions, regimes (2); impact coefficients, Macro Score, backtest engine (3); technicals, liquidity levels and gated trade signals (4). See `DATA_GAPS.md`.
 > A full Persian setup guide arrives in Phase 7.
 
 ## Layout
@@ -21,6 +21,17 @@ US macro, liquidity, rates, credit, dollar, intermarket and commodity data → m
 | `models/events.py`, `models/impact.py` | point-in-time release surprises; event study / local projections / long horizon; 0–10 Impact Coefficient |
 | `jobs/impact.py` | Phase 3: coefficients for BTC & gold and the Macro Score (−100…+100) with contribution breakdown |
 | `backtest/engine.py` | trade simulator (fees, slippage, stop-first, 3-TP scale-out, walk-forward folds) used for win rates in Phase 4 |
+| `technicals/` | indicators, causal swing structure (HH/HL, BOS/CHOCH), levels, volume profile, order-book walls, liquidation estimates |
+| `signals/` | the trend-pullback rules (one causal function for backtest and live) and the walk-forward engine |
+| `jobs/signals.py` | Phase 4 report: technical state, context levels, OOS backtest, signals / watchlist, risks, disclaimer |
+
+### How a signal is allowed out
+1. the setup fires on the latest closed 4h bars (daily trend, 4h structure, pullback into support/resistance, momentum confirmation);
+2. the medium-horizon Macro Score agrees in direction with |score| ≥ 15;
+3. blended reward:risk ≥ 1.5 with the stop beyond structure and ≥ 1×ATR;
+4. the same setup has a **demonstrated out-of-sample edge**: walk-forward average R > 0 over ≥ 30 trades, after fees and slippage.
+
+On the data to 2026-09-28 the setup did **not** show an edge on either asset (BTC longs ≈ break-even, shorts and gold negative), so the engine currently emits no signals and lists fired setups on a watchlist with the reason. That is the intended behaviour: no backtested edge, no signal.
 | `tests/` | offline tests against fixtures in each source's real format |
 
 ## Run

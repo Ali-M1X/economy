@@ -3,8 +3,10 @@
     python -m jobs.signals --from-cache output/cache      # reads output/macro_scores.json and features_state.json
 
 A signal is emitted only when (1) the setup rules fire on the latest closed 4h bars, (2) the medium-horizon
-Macro Score points the same way with |score| ≥ MACRO_THRESHOLD and (3) blended R:R ≥ 1.5. Otherwise the
-setup is listed on a watchlist. This is analysis, not financial advice.
+Macro Score points the same way with |score| ≥ MACRO_THRESHOLD, (3) blended R:R ≥ 1.5 and (4) the same setup
+has a demonstrated edge: out-of-sample average R > 0 over ≥ MIN_EDGE_TRADES walk-forward trades for that
+asset and side. Otherwise the setup is listed on a watchlist with the reasons it was blocked.
+This is analysis, not financial advice.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from technicals.structure import structure
 
 OUT_DIR = ROOT / "output"
 MACRO_THRESHOLD = 15.0
+MIN_EDGE_TRADES = 30  # a live signal also needs that side's out-of-sample average R > 0 over ≥ 30 trades
 DISCLAIMER_FA = "این تحلیل صرفاً جنبه آموزشی و اطلاعاتی دارد و توصیه مالی یا پیشنهاد خرید و فروش نیست."
 DISCLAIMER_EN = "This is analysis, not financial advice."
 ASSETS = {"BTC": {"file": "BTC", "bucket": 250.0, "proxy": None},
@@ -89,13 +92,13 @@ def expected_range(bars: pd.DataFrame, macro: float | None) -> dict:
     """Probable ranges: 1 day from daily ATR; 4 weeks from realized volatility, centred on a macro drift of
     (score/100) × 0.5σ (the Macro Score shifts the centre, never the width)."""
     d1 = resample(bars, "1d")
-    price = float(d1["close"].iloc[-1])
+    price = float(bars["close"].iloc[-1])  # centre on the latest price, not the last daily close
     a = float(atr(d1).iloc[-1])
     ret = np.log(d1["close"]).diff().dropna().tail(90)
     sig = float(ret.std() * np.sqrt(20))
     drift = (macro or 0) / 100 * 0.5 * sig
     return {"1d": [round(price - a, 2), round(price + a, 2)],
-            "4w_1sigma": [round(price * np.exp(drift - sig), 2), round(price * np.exp(drift + sig), 2)],
+            "4w_1sigma": [round(float(price * np.exp(drift - sig)), 2), round(float(price * np.exp(drift + sig)), 2)],
             "4w_sigma_pct": round(sig * 100, 1), "macro_drift_pct": round(drift * 100, 2)}
 
 
@@ -144,10 +147,14 @@ def analyse_asset(asset: str, cfg: dict, cache: Path, macro_all: dict, state: di
         stats = wf["summary"]["long" if s.direction > 0 else "short"]
         card = engine.signal_card(s, asset, stats, m_med, "days–2 weeks (4h setup)")
         macro_ok = m_med is not None and abs(m_med) >= MACRO_THRESHOLD and np.sign(m_med) == s.direction
+        edge_ok = stats.get("n_trades", 0) >= MIN_EDGE_TRADES and (stats.get("avg_r") or -1) > 0
         card["macro_score_medium"] = m_med
+        card["blocked_by"] = [x for x, ok in (("macro not aligned", macro_ok),
+                                              (f"no demonstrated edge (OOS avg R {stats.get('avg_r')} over "
+                                               f"{stats.get('n_trades', 0)} trades)", edge_ok)) if not ok]
         card["reasons_macro"] = [f"{t['indicator']} {t['contribution']:+.1f}" for t in (macro.get("medium") or {}).get("top", [])[:4]]
         card["risks"] = risk_section(asset, now, cache, state, macro, s.direction)
-        (signals if macro_ok else watch).append(card)
+        (signals if macro_ok and edge_ok else watch).append(card)
     return {
         "asset": asset, "proxy": cfg["proxy"], "price": price, "technical": tech,
         "context": context_levels(bars, cache, cfg, price), "expected_range": expected_range(bars, m_med),
@@ -163,8 +170,9 @@ def render(res: list[dict], now: pd.Timestamp) -> str:
     L = ["# Phase 4 — Technicals & trade signals", "", f"As of {now:%Y-%m-%d %H:%M} UTC · {now.tz_convert(TEHRAN):%H:%M} Tehran", "",
          f"> **{DISCLAIMER_EN}** {DISCLAIMER_FA}", "",
          f"Rules: `signals/rules.py` (trend pullback on 4h, daily trend filter). Signals need |medium Macro Score| ≥ "
-         f"{MACRO_THRESHOLD:g} in the same direction and blended R:R ≥ 1.5. Win rates are walk-forward out-of-sample "
-         "with fees & slippage, for the technical setup (the macro filter is not in the backtest).", ""]
+         f"{MACRO_THRESHOLD:g} in the same direction, blended R:R ≥ 1.5 and a demonstrated out-of-sample edge "
+         f"(avg R > 0 over ≥ {MIN_EDGE_TRADES} trades). Win rates are walk-forward out-of-sample with fees & slippage, "
+         "for the technical setup (the macro filter is not in the backtest).", ""]
     for r in res:
         if "error" in r:
             L += [f"## {r['asset']}", "", r["error"], ""]
@@ -199,7 +207,7 @@ def render(res: list[dict], now: pd.Timestamp) -> str:
             L.append(f"| {side} | {s['n_trades']} | {s['win_rate']:.0%} | {s['avg_r']:+.2f} | {s['total_r']:+.1f} | {s['max_drawdown_r']} | "
                      f"{s['profit_factor']} | {s['tp1_rate']:.0%} / {s['tp2_rate']:.0%} / {s['tp3_rate']:.0%} | {'yes' if s['small_sample'] else 'no'} |")
         L += ["", f"Current parameters (chosen on the last 24 months): {b['latest_params']}", ""]
-        for title, items in (("Signals", r["signals"]), ("Watchlist (setup fired, macro not aligned)", r["watchlist"])):
+        for title, items in (("Signals", r["signals"]), ("Watchlist (setup fired, but blocked)", r["watchlist"])):
             L += [f"### {title}", ""]
             if not items:
                 L.append("none")
@@ -209,6 +217,7 @@ def render(res: list[dict], now: pd.Timestamp) -> str:
                       f"({', '.join(s['target_kinds'])}) · R:R {s['rr']} (blended {s['blended_rr']}) · win rate "
                       f"{wr} over {s['n_backtest']} OOS trades"
                       f"{' (small sample)' if s['small_sample'] else ''} · confidence {s['confidence']}",
+                      *([f"  - blocked: {'; '.join(s['blocked_by'])}"] if s.get("blocked_by") else []),
                       f"  - invalidation: {s['invalidation']}", f"  - technical: {'; '.join(s['reasons_technical'])}",
                       f"  - macro (medium score {s['macro_score_medium']}): {', '.join(s['reasons_macro'])}",
                       f"  - risks: {'; '.join(s['risks']) or 'none flagged'}"]

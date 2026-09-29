@@ -149,7 +149,7 @@ def evaluate(pre: dict, t: int, direction: int, params: Params) -> Setup | None:
         if not targets or (p - targets[-1]) * direction > 0:
             targets.append(float(p))
             kinds.append(f"{mult:g}R")
-    rr = tuple(abs(p - c) / risk for p in targets[:3])
+    rr = tuple(float(abs(p - c) / risk) for p in targets[:3])
     blended = float(np.mean(rr))
     if blended < params.min_rr:
         return None

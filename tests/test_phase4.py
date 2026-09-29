@@ -1,6 +1,7 @@
 """Phase 4: indicators, structure, levels, rules (incl. no look-ahead), walk-forward, job end-to-end."""
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -129,3 +130,24 @@ def test_signals_job_end_to_end(tmp_path, monkeypatch):
     assert any("CPI" in r for r in btc["risks"])
     md = (out / "signals.md").read_text()
     assert "not financial advice" in md and "توصیه مالی" in md
+
+
+def test_signal_needs_demonstrated_edge(monkeypatch):
+    """A setup that fires with an aligned macro score is still blocked when its OOS avg R ≤ 0."""
+    from jobs import signals as job
+    from signals.rules import Setup
+    s = Setup(pd.Timestamp("2026-09-28", tz="UTC"), 1, 100.0, 98.0, "swing low", 97.0, (102.0, 104.0, 106.0),
+              ("swing high", "swing high", "4R"), (1.67, 2.33, 3.0), 2.33, 1.0, 45.0, ["x"])
+    bars = synthetic(hours=24 * 60)
+
+    def fake_wf(b, asset):
+        return {"summary": {"long": {"n_trades": 200, "win_rate": 0.4, "avg_r": -0.1}, "short": {"n_trades": 0},
+                            "all": {"n_trades": 200}},
+                "latest_params": Params(), "period": ["a", "b"], "costs": {"fee_bps": 5, "slippage_bps": 2}, "folds": []}
+    monkeypatch.setattr(job.engine, "walk_forward", fake_wf)
+    monkeypatch.setattr(job.engine, "live_setups", lambda b, p: [s])
+    monkeypatch.setattr(job, "load_bars", lambda c, n: bars)
+    res = job.analyse_asset("BTC", job.ASSETS["BTC"], Path("."), {"BTC": {"medium": {"score": 50, "top": []}}}, {},
+                            pd.Timestamp("2026-09-29 10:00", tz="UTC"))
+    assert res["signals"] == [] and len(res["watchlist"]) == 1
+    assert any("no demonstrated edge" in b for b in res["watchlist"][0]["blocked_by"])
