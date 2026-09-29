@@ -2,7 +2,7 @@
 
 US macro, liquidity, rates, credit, dollar, intermarket and commodity data → measured impact on **Bitcoin** and **Gold**, with a Persian dashboard, causal reports and backtested trade signals.
 
-> Status: **Phase 5 done** — collectors + validation (1); features, FedWatch, Fed Stance Score, curve inversions, regimes (2); impact coefficients, Macro Score, backtest engine (3); technicals, liquidity levels and gated trade signals (4); Persian RTL Streamlit dashboard with light/dark mode (5). See `DATA_GAPS.md`.
+> Status: **Phase 6 done** — collectors + validation (1); features, FedWatch, Fed Stance Score, curve inversions, regimes (2); impact coefficients, Macro Score, backtest engine (3); technicals, liquidity levels and gated trade signals (4); Persian RTL Streamlit dashboard with light/dark mode (5); Telegram messages, Claude explanations and classification, scheduling and health checks (6). See `DATA_GAPS.md`.
 > A full Persian setup guide arrives in Phase 7.
 
 ## Layout
@@ -26,7 +26,11 @@ US macro, liquidity, rates, credit, dollar, intermarket and commodity data → m
 | `jobs/signals.py` | Phase 4 report: technical state, context levels, OOS backtest, signals / watchlist, risks, disclaimer |
 | `dashboard/` | Phase 5 Streamlit app (`app.py`), data loader, cards, charts, design tokens, demo snapshot, headless smoke check |
 | `core/fa.py` | Persian rendering of the English messages the engines emit (reasons, risks, states), with bidi-safe numbers |
-| `tests/` | offline tests against fixtures in each source's real format, plus a full dashboard render on synthetic data |
+| `llm/` | Claude API wrapper (structured JSON + text; `CLAUDE_MODEL`, default `claude-sonnet-5`) and the news / Fed-document classifiers |
+| `reports/` | facts (every number a message may use), Persian Telegram messages, Claude causal explanation with number validation |
+| `notify/telegram.py` | Telegram Bot API sender (HTML, splitting, flood control); without secrets it writes to `output/outbox/` |
+| `jobs/classify.py`, `jobs/notify.py`, `jobs/health.py`, `jobs/scheduler.py`, `jobs/intraday.py` | Phase 6 jobs (see *Scheduling*) |
+| `tests/` | offline tests against fixtures in each source's real format, a full dashboard render on synthetic data, and Phase 6 with Claude/Telegram mocked |
 
 ### How a signal is allowed out
 1. the setup fires on the latest closed 4h bars (daily trend, 4h structure, pullback into support/resistance, momentum confirmation);
@@ -62,11 +66,58 @@ python -m dashboard.demo_snapshot /tmp/demo && MACRO_PULSE_SNAPSHOT_DIR=/tmp/dem
 
 **Hosting on Streamlit Community Cloud** (free): 1) set the repository variable `PUBLISH_SNAPSHOT=true` and run `data-availability` once, which publishes `https://github.com/<owner>/<repo>/releases/download/snapshot-latest/snapshot.tar.gz`; 2) on share.streamlit.io create an app from this repo, main file `dashboard/app.py`; 3) in the app's *Secrets*, add `MACRO_PULSE_SNAPSHOT_URL = "<that URL>"`. The dashboard needs no API keys. The snapshot is public macro/market data only; while the repo is public, so is the release asset.
 
+## Telegram & Claude (Phase 6)
+Messages (Persian, HTML):
+- **heads-up** the evening before a tracked release: time in Tehran, previous value, what a higher/lower number meant historically for BTC and gold, and the channel chain;
+- **impact report** after a release or market-moving news: what changed, the surprise vs the system's expectation, the causal chain, Macro Scores with top contributors, regime, Fed stance and FedWatch;
+- **numeric signals**, or the watchlist with the blocking reason, ranges, backtest and risks;
+- **weekly summary**;
+- **news alerts** (importance ≥ 4);
+- **health warnings**.
+
+Every message ends with the disclaimer and, if the variable `DASHBOARD_URL` is set, a dashboard link. The latest message of each kind is also kept in the snapshot and shown on the dashboard's reports tab.
+
+Claude never produces numbers. It does two things:
+- classifies news (relevance, direction for BTC/gold, importance 1–5, Persian title) and Fed documents (hawkish ↔ dovish, which feeds the Fed Stance Score's communications component), using schema-constrained JSON;
+- writes the causal paragraph of the impact report from the computed facts and the channel table only. Every number in that paragraph must exist in the facts; otherwise the paragraph is discarded and a deterministic Persian explanation is used.
+
+Without `ANTHROPIC_API_KEY`, classification is skipped and the deterministic text is used. Without Telegram secrets, messages go to `output/outbox/` (uploaded with the run artifact).
+
+**Health gate:** before a report, `jobs.health` checks:
+- the core series (prices, policy rate, yields, dollar, inflation, balance sheet …);
+- the freshness of the 15-minute BTC/PAXG bars;
+- that every analysis output exists;
+- that fewer than 25 % of all series failed.
+
+If any check fails, a health warning is sent instead of the report. The same warning is not repeated within 12 h.
+
+## Scheduling
+`schedule.yml` holds all crons (UTC); `jobs.scheduler plan` maps the cron that fired to a mode:
+
+| cron (UTC) | mode | what happens |
+|---|---|---|
+| every 15 min | intraday | news scan → Claude classification → alerts for importance ≥ 4; importance 5 triggers a full report |
+| daily 14:40 (18:10 Tehran) | headsup | full pipeline refresh → heads-up for tomorrow's releases (Tehran date) + health check |
+| 5 min after each release time, for both US DST offsets | release | only if a tracked release happened in the last 100 min and was not reported: wait until FRED shows the new value (≤ 2 h) → full pipeline → impact report + signals |
+| Saturday 03:20 (06:50 Tehran) | weekly | full pipeline (coefficients and backtests recomputed) → weekly summary |
+
+GitHub Actions limits to know:
+- cron is UTC only, hence the doubled release crons;
+- scheduled runs can start several minutes late or be dropped under load;
+- the shortest interval is 5 minutes;
+- **scheduled workflows run only from the default branch** (merge this branch into `main` to activate them);
+- they are disabled after 60 days without repository activity (re-enable in the Actions tab).
+
+The same jobs will run on a VPS via docker-compose (Phase 7). Run state (reported releases, alerted news, last health warning) is kept in the Actions cache.
+
+Secrets used: `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`. Optional variables: `CLAUDE_MODEL`, `DASHBOARD_URL`. The easiest end-to-end test is a manual run of `schedule` with mode `report`, `weekly`, `headsup` or `intraday`.
+
 ## Workflows
 | workflow | what it does | database |
 |---|---|---|
 | `ci` | tests (incl. a throw-away Postgres service) | never touches Supabase |
-| `data-availability` | live collection + validation + Phases 2–4 + a headless dashboard render (job summary + artifact); with `PUBLISH_SNAPSHOT=true` a second job publishes the `snapshot-latest` release asset | only when the repository **variable** `ENABLE_DB_STORAGE` is `true`; otherwise `DATABASE_URL` is not passed to the job at all |
+| `data-availability` | the full pipeline: live collection + validation + (Claude classification) + Phases 2–4 + health check + (Telegram) + headless dashboard render (job summary + artifact). Push runs and mode `none` use no Claude and no Telegram. With `PUBLISH_SNAPSHOT=true` a second job publishes the `snapshot-latest` release asset | only when the repository **variable** `ENABLE_DB_STORAGE` is `true`; otherwise `DATABASE_URL` is not passed to the job at all |
+| `schedule` | all crons (see *Scheduling*); calls `data-availability` for full runs | same as `data-availability` |
 | `features-dev` | re-runs Phases 2–4 and the dashboard render on the latest data snapshot artifact (optional `inspect` input prints raw values) | never |
 
 To enable storage later: set `DATABASE_URL` to Supabase's **Session pooler** URI (GitHub runners have no IPv6, so the direct `db.<ref>.supabase.co` host is unreachable), then add the variable `ENABLE_DB_STORAGE=true`.

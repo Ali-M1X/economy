@@ -196,6 +196,18 @@ def scores(coefs: pd.DataFrame, wk: pd.DataFrame, mo: pd.DataFrame, evs: pd.Data
     return out
 
 
+def recent_releases(evs: pd.DataFrame, now: pd.Timestamp, days: int = 7) -> list[dict]:
+    """First-print surprises of the last `days` (newest first) — the "what changed" input of the reports."""
+    if evs.empty:
+        return []
+    e = evs[pd.to_datetime(evs["release_utc"], utc=True) >= now - pd.Timedelta(days=days)]
+    e = e.sort_values("release_utc", ascending=False)
+    return [{"indicator": r.indicator, "release_utc": pd.Timestamp(r.release_utc).isoformat(),
+             "obs_date": f"{pd.Timestamp(r.obs_date):%Y-%m-%d}", "actual": round(float(r.actual), 4),
+             "expected": round(float(r.expected), 4), "surprise": round(float(r.surprise), 4), "z": round(float(r.z), 2),
+             "basis": r.surprise_basis} for r in e.itertuples()]
+
+
 # ───────────────────────────── report ─────────────────────────────
 
 def render(coefs: pd.DataFrame, evs: pd.DataFrame, sc: dict, now: pd.Timestamp) -> str:
@@ -287,6 +299,7 @@ def main(argv: list[str] | None = None) -> int:
     OUT_DIR.mkdir(exist_ok=True)
     coefs.to_csv(OUT_DIR / "impact_coefficients.csv", index=False)
     (OUT_DIR / "macro_scores.json").write_text(json.dumps(sc, indent=1), encoding="utf-8")
+    (OUT_DIR / "recent_releases.json").write_text(json.dumps(recent_releases(evs, now), indent=1), encoding="utf-8")
     if args.store:
         print(f"stored: {store(coefs, sc, now)}")
     md = render(coefs, evs, sc, now)

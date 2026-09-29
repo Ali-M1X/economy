@@ -1,34 +1,77 @@
 name: data-availability
-# Runs every collector against the live sources, publishes the Data Availability Report and the
-# Phase 2 features summary (job summary + artifact).
+# The full pipeline: collect + validate every source → (Claude classification) → Phase 2 features → Phase 3 impact
+# coefficients & Macro Score → Phase 4 technicals & signals → (Telegram) → dashboard render check → artifact.
+#
+#   push / manual with mode "none"  development run: no Claude, no Telegram
+#   called by schedule.yml          mode release | report | weekly | headsup → Persian messages to Telegram
 #
 # Database storage is OFF unless the repository variable ENABLE_DB_STORAGE is "true"
 # (Settings → Secrets and variables → Actions → Variables). While it is off, DATABASE_URL is not even
 # passed to the job, and features are computed from this run's own snapshot (output/cache).
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "none = no messages; report / weekly / headsup send to Telegram (outbox artifact if no bot secrets)"
+        type: choice
+        options: [none, report, weekly, headsup]
+        default: none
+  workflow_call:
+    inputs:
+      mode: {type: string, required: true}
+      events: {type: string, default: ""}
+      trigger: {type: string, default: ""}
   push:
     branches: ["claude/**"]
     paths: ["collectors/**", "config/**", "jobs/availability.py", "core/**", "db/**", "validation/**",
             ".github/workflows/data-availability.yml"]
-concurrency: {group: data-availability, cancel-in-progress: true}
 jobs:
   report:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 170  # a release run may wait up to 2 h for the new value to appear
+    permissions: {contents: read}
+    concurrency:
+      group: pipeline-${{ inputs.mode || 'none' }}
+      cancel-in-progress: ${{ (inputs.mode || 'none') == 'none' }}
     env:
+      MODE: ${{ inputs.mode || 'none' }}
+      EVENTS: ${{ inputs.events }}
+      TRIGGER: ${{ inputs.trigger }}
       FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
       BLS_API_KEY: ${{ secrets.BLS_API_KEY }}
       DATABASE_URL: ${{ vars.ENABLE_DB_STORAGE == 'true' && secrets.DATABASE_URL || '' }}
+      ANTHROPIC_API_KEY: ${{ (inputs.mode || 'none') != 'none' && secrets.ANTHROPIC_API_KEY || '' }}
+      CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
+      TELEGRAM_BOT_TOKEN: ${{ (inputs.mode || 'none') != 'none' && secrets.TELEGRAM_BOT_TOKEN || '' }}
+      TELEGRAM_CHAT_ID: ${{ (inputs.mode || 'none') != 'none' && secrets.TELEGRAM_CHAT_ID || '' }}
+      DASHBOARD_URL: ${{ vars.DASHBOARD_URL }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.12", cache: pip}
       - run: pip install -r requirements.txt
+      - name: Restore scheduler state
+        if: env.MODE != 'none'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            state/health_last.json
+            state/headsup_sent.json
+            state/reported_events.json
+            state/fed_docs_scored.csv
+          key: mp-state-pipe-${{ github.run_id }}
+          restore-keys: mp-state-pipe-
+      - name: Wait for the release's new values (max 2 h)
+        if: env.MODE == 'release' && env.EVENTS != ''
+        continue-on-error: true  # a source error while waiting must not cancel the report
+        run: python -m jobs.scheduler wait --events "$EVENTS"
       - name: Collect + validate
         run: |
           if [ -n "$DATABASE_URL" ]; then STORE=--store; else STORE=; echo "DB storage disabled (ENABLE_DB_STORAGE != true)"; fi
           python -m jobs.availability --cache-dir output/cache $STORE
+      - name: Classify news and Fed documents (Claude)
+        if: env.MODE != 'none'
+        run: python -m jobs.classify --cache output/cache --state state
       - name: Phase 2 features
         if: success() || failure()
         run: |
@@ -39,12 +82,35 @@ jobs:
       - name: Phase 4 technicals & signals
         if: success() || failure()
         run: python -m jobs.signals --from-cache output/cache
+      - name: Health check
+        if: success() || failure()
+        run: python -m jobs.health --root output
+      - name: Telegram messages
+        if: (success() || failure()) && env.MODE != 'none'
+        run: |
+          case "$MODE" in
+            release|report) python -m jobs.notify report --root output --state state --trigger "$TRIGGER" ;;
+            weekly)         python -m jobs.notify weekly --root output --state state ;;
+            headsup)        python -m jobs.notify headsup --root output --state state
+                            python -m jobs.notify health --root output --state state ;;
+          esac
+          if [ "$MODE" = release ] && [ -n "$EVENTS" ]; then python -m jobs.scheduler mark --events "$EVENTS" --state state; fi
       - name: Phase 5 dashboard render check
         if: success() || failure()
         run: python -m dashboard.smoke output
       - uses: actions/upload-artifact@v4
         if: always()
         with: {name: data-availability, path: output/}
+      - name: Save scheduler state
+        if: always() && env.MODE != 'none'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            state/health_last.json
+            state/headsup_sent.json
+            state/reported_events.json
+            state/fed_docs_scored.csv
+          key: mp-state-pipe-${{ github.run_id }}-${{ github.run_attempt }}
 
   # Opt-in: publish output/ as the `snapshot-latest` release asset that the hosted dashboard reads
   # (MACRO_PULSE_SNAPSHOT_URL). Off unless the repository variable PUBLISH_SNAPSHOT is "true". The data is public
@@ -60,6 +126,7 @@ jobs:
       - name: Upload snapshot-latest release asset
         env: {GH_TOKEN: "${{ github.token }}"}
         run: |
+          rm -rf output/outbox
           tar czf snapshot.tar.gz output
           ls -lh snapshot.tar.gz
           gh release view snapshot-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \

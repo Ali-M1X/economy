@@ -1,0 +1,127 @@
+name: schedule
+# All scheduled work. `jobs.scheduler plan` maps the cron that fired to a mode (the cron strings below must match
+# jobs/scheduler.py — a test checks this):
+#   */15 min         intraday  news scan → Claude classification → alerts (importance ≥ 4); importance 5 → full report
+#   daily 14:40 UTC  headsup   full refresh + heads-up for releases scheduled tomorrow (Tehran) + health check
+#   release crons    release   only if a tracked release happened in the last 100 min and was not reported yet:
+#                              wait for the new value (≤ 2 h) → full pipeline → impact report + signals
+#   Sat 03:20 UTC    weekly    full refresh, coefficients and backtests recomputed → weekly summary
+#
+# GitHub Actions limits: cron is UTC only (release crons cover both US DST offsets), runs can start several minutes
+# late or be skipped under load, the shortest interval is 5 min, and scheduled workflows run only from the default
+# branch and are disabled after 60 days without repository activity. docker-compose runs the same schedule on a VPS.
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+    - cron: "40 14 * * *"
+    - cron: "20 3 * * 6"
+    - cron: "35 12,13 * * 1-5"
+    - cron: "5 14,15,17,18,19 * * 1-5"
+    - cron: "35 20,21 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "what to run now"
+        type: choice
+        options: [intraday, headsup, release, weekly, report]
+        default: report
+permissions: {contents: read}
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      events: ${{ steps.plan.outputs.events }}
+      trigger: ${{ steps.plan.outputs.trigger }}
+    env:
+      FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+      SCHEDULE: ${{ github.event.schedule }}
+      MODE_INPUT: ${{ inputs.mode }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r requirements.txt
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            state/health_last.json
+            state/headsup_sent.json
+            state/reported_events.json
+            state/fed_docs_scored.csv
+          key: mp-state-pipe-${{ github.run_id }}
+          restore-keys: mp-state-pipe-
+      - id: plan
+        run: python -m jobs.scheduler plan --schedule "$SCHEDULE" --mode "$MODE_INPUT" --state state
+      - name: Claim the release (a later cron in the window must not report it again)
+        if: steps.plan.outputs.mode == 'release'
+        env: {EVENTS: "${{ steps.plan.outputs.events }}"}
+        run: python -m jobs.scheduler mark --events "$EVENTS" --state state
+      - if: steps.plan.outputs.mode == 'release'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            state/health_last.json
+            state/headsup_sent.json
+            state/reported_events.json
+            state/fed_docs_scored.csv
+          key: mp-state-pipe-${{ github.run_id }}-plan
+
+  intraday:
+    needs: plan
+    if: needs.plan.outputs.mode == 'intraday'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency: {group: intraday, cancel-in-progress: false}
+    outputs:
+      trigger_report: ${{ steps.scan.outputs.trigger_report }}
+      trigger_text: ${{ steps.scan.outputs.trigger_text }}
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      DASHBOARD_URL: ${{ vars.DASHBOARD_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r requirements.txt
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            state/news_scored.csv
+            state/news_alerted.json
+          key: mp-state-news-${{ github.run_id }}
+          restore-keys: mp-state-news-
+      - id: scan
+        run: python -m jobs.intraday --state state
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: |
+            state/news_scored.csv
+            state/news_alerted.json
+          key: mp-state-news-${{ github.run_id }}-${{ github.run_attempt }}
+
+  pipeline:
+    needs: plan
+    if: contains(fromJSON('["headsup", "release", "weekly", "report"]'), needs.plan.outputs.mode)
+    permissions: {contents: write}  # only the opt-in publish-snapshot job inside uses it
+    uses: ./.github/workflows/data-availability.yml
+    with:
+      mode: ${{ needs.plan.outputs.mode }}
+      events: ${{ needs.plan.outputs.events }}
+      trigger: ${{ needs.plan.outputs.trigger }}
+    secrets: inherit
+
+  news-report:
+    needs: intraday
+    if: needs.intraday.outputs.trigger_report == 'true'
+    permissions: {contents: write}
+    uses: ./.github/workflows/data-availability.yml
+    with:
+      mode: report
+      trigger: ${{ needs.intraday.outputs.trigger_text }}
+    secrets: inherit

@@ -97,6 +97,18 @@ def build(out: Path, seed: int = 3, now: pd.Timestamp | None = None) -> Path:
                    "theory": -1, "conflict": False}
                   for i in ind for a in ("BTC", "Gold") for h, b in (("1h", "short"), ("24h", "short"), ("4w", "medium"), ("6m", "long"))]
                  ).to_csv(out / "impact_coefficients.csv", index=False)
+    (out / "features_state.json").write_text(json.dumps({
+        "as_of": f"{end:%Y-%m-%d}",
+        "regime": {"date": f"{end:%Y-%m-%d}", "regime": "Expansion",
+                   "probabilities": {"Expansion": 0.66, "Peak": 0.27, "Recession": 0.02, "Recovery": 0.05},
+                   "triggers": ["→ Peak if the momentum outlook (growth momentum vs inflation/liquidity pressure) crosses zero (now +0.30)"]},
+        "fed_stance": {"score": -62.0, "components": {"a1_policy_direction": 0.9, "a2_market_path": -1.0, "b_balance_sheet": -1.0,
+                                                      "c_communications": None, "d_dot_plot": -1.0}},
+        "fedwatch_next": {"meeting": f"{end + pd.Timedelta(days=9):%Y-%m-%d}", "p_cut": 0.7, "p_hold": 0.3, "p_hike": 0.0},
+        "curve_state": {"spread_10y_2y": "normal", "spread_10y_3m": "normal", "spread_30y_2y": "inverted"}}))
+    (out / "recent_releases.json").write_text(json.dumps([{
+        "indicator": "cpi", "release_utc": (now - pd.Timedelta(hours=3)).isoformat(), "obs_date": f"{end - pd.DateOffset(months=1):%Y-%m-01}",
+        "actual": 0.42, "expected": 0.25, "surprise": 0.17, "z": 1.8, "basis": "vs mean3 (no free consensus)"}]))
     for n in ("signals", "impact_summary", "features_summary", "data_availability"):
         (out / f"{n}.md").write_text(f"# {n} (demo)\n\nsynthetic\n")
     return out

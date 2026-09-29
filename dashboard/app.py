@@ -20,6 +20,7 @@ from core.timeutil import TEHRAN  # noqa: E402
 from dashboard import charts, data  # noqa: E402
 from core.fa import fa, label, ltr, word  # noqa: E402
 from dashboard.cards import REGIME_FA, SECTIONS, STATUS  # noqa: E402
+from reports.messages import proxy_fa  # noqa: E402
 from dashboard.theme import CSS, tokens  # noqa: E402
 from features.fed_stance import FORMULA_FA  # noqa: E402
 from technicals.indicators import resample  # noqa: E402
@@ -212,7 +213,7 @@ with tabs["بیت‌کوین و طلا"]:
     st.info(DISCLAIMER)
     for res in (B.signals or {}).get("assets", []):
         asset = res["asset"]
-        st.subheader({"BTC": "بیت‌کوین", "Gold": "طلا"}[asset] + (f" — {res['proxy']}" if res.get("proxy") else ""))
+        st.subheader({"BTC": "بیت‌کوین", "Gold": "طلا"}[asset] + (f" — {proxy_fa(res['proxy'])}" if res.get("proxy") else ""))
         bars = B.bars("BTC" if asset == "BTC" else "PAXG")
         levels = []
         tech = res.get("technical", {})
@@ -380,12 +381,24 @@ with tabs["تقویم و اخبار"]:
                          "پیش‌بینی (اجماع)": "رایگان در دسترس نیست"})
         st.markdown("**تقویم اقتصادی ۱۴ روز آینده**")
         st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-    st.markdown("**آخرین اخبار (فدرال، BEA، GDELT)** — تیترها به زبان اصلی؛ ترجمه و طبقه‌بندی اهمیت با Claude در فاز ۶")
+    scored = B.news_scored
+    if not scored.empty and "importance" in scored:
+        st.markdown("**آخرین اخبار** — ترجمه و طبقه‌بندی خودکار با Claude از روی تیتر (★ = اهمیت برای BTC/طلا)")
+    else:
+        st.markdown("**آخرین اخبار (فدرال، BEA، GDELT)** — تیترها به زبان اصلی (طبقه‌بندی با Claude پس از افزودن ANTHROPIC_API_KEY)")
     if not B.news.empty:
-        n = B.news.head(40).copy()
+        n = B.news.head(60).copy()
+        eff = {"bullish": "صعودی", "bearish": "نزولی", "neutral": "خنثی", "unrelated": ""}
+        if not scored.empty and "importance" in scored:
+            n = n.merge(scored[["id", "importance", "btc", "gold", "title_fa"]], on="id", how="left")
+            n["title"] = n["title_fa"].fillna(n["title"])
+            n["اهمیت"] = n["importance"].map(lambda v: "★" * int(v) if pd.notna(v) else "")
+            n["BTC"], n["طلا"] = n["btc"].map(eff).fillna(""), n["gold"].map(eff).fillna("")
+            n = n.sort_values(["importance", "published_utc"], ascending=False, na_position="last")
         n["زمان (تهران)"] = n["published_utc"].map(lambda x: fmt_tehran(x) if pd.notna(x) else "—")
         n["source"] = n["source"].map(label)
-        st.dataframe(n[["زمان (تهران)", "source", "title", "url"]].rename(columns={"source": "منبع", "title": "عنوان"}),
+        cols = ["زمان (تهران)", *[c for c in ("اهمیت", "BTC", "طلا") if c in n], "source", "title", "url"]
+        st.dataframe(n[cols].head(40).rename(columns={"source": "منبع", "title": "عنوان"}),
                      hide_index=True, width="stretch", column_config={"url": st.column_config.LinkColumn("لینک")})
     else:
         st.caption("خبری در اسنپ‌شات نیست.")
@@ -446,8 +459,17 @@ with tabs["رژیم‌ها"]:
                    "فازهای این مدل با تاریخ‌گذاری رسمی رکود یکی نیستند.")
 
 with tabs["گزارش‌ها"]:
-    st.caption("گزارش‌های فنی خط لوله (به انگلیسی، برای بررسی دقیق اعداد). گزارش‌های فارسی روزانه/هفتگی با Claude در فاز ۶ "
-               "اضافه می‌شوند؛ تاریخچه کامل پس از فعال شدن پایگاه داده (Supabase).")
+    kinds = {"impact": "گزارش اثر", "signals": "سیگنال‌های عددی", "weekly": "خلاصه هفتگی", "headsup": "هشدار یک روز قبل",
+             "health": "هشدار سلامت داده"}
+    if B.messages:
+        st.markdown("**آخرین پیام‌های فارسی (همان متن ارسال‌شده به تلگرام)**")
+        for kind, html_ in B.messages.items():
+            stamp = html_.split("-->", 1)[0].replace("<!--", "").strip() if html_.startswith("<!--") else ""
+            with st.expander(f"{kinds.get(kind, kind)}" + (f" — {fmt_tehran(stamp)}" if stamp else ""), expanded=kind == "impact"):
+                body = html_.split("-->", 1)[1] if html_.startswith("<!--") else html_
+                st.markdown(f'<div dir="rtl">{body.strip().replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
+    st.caption("گزارش‌های فنی خط لوله (به انگلیسی، برای بررسی دقیق اعداد). تاریخچه کامل گزارش‌ها پس از فعال شدن "
+               "پایگاه داده (Supabase).")
     names = {"signals": "سیگنال‌ها و تکنیکال", "impact_summary": "ضرایب اثر", "features_summary": "شاخص‌ها و رژیم",
              "data_availability": "گزارش دسترس‌پذیری داده"}
     for n, md in B.reports.items():

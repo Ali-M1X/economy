@@ -12,3 +12,4 @@ scipy>=1.13
 hmmlearn>=0.3
 streamlit>=1.60,<2
 plotly>=6,<8
+anthropic>=1.9,<2

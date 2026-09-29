@@ -529,7 +529,7 @@ def write_cache(d: Path, results: dict[str, SeriesResult], vintages: dict[str, p
                   for e in ev], columns=["event_id", "release_id", "name_en", "name_fa", "importance", "scheduled_utc"]) \
         .to_csv(d / "calendar_events.csv", index=False)
     if stash.get("news"):
-        pd.DataFrame([{k: i.get(k) for k in ("id", "source", "published_utc", "title", "url")} for i in stash["news"]]) \
+        pd.DataFrame([{k: i.get(k) for k in ("id", "source", "published_utc", "title", "url", "summary")} for i in stash["news"]]) \
             .sort_values("published_utc", ascending=False, na_position="last").to_csv(d / "news.csv", index=False)
     # live market context for Phase 4 (display only: no history exists for these)
     if stash.get("oi_hist") is not None and not stash["oi_hist"].empty:

@@ -74,6 +74,8 @@ def ltr(x) -> str:
 
 
 def label(k: str) -> str:
+    if isinstance(k, str) and k.startswith("gdelt:"):
+        return "GDELT · " + k.split(":", 1)[1]
     return LABELS.get(k, k)
 
 

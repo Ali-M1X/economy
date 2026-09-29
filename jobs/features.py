@@ -229,7 +229,12 @@ def load_cache(d: Path) -> tuple[dict, dict, pd.DataFrame, pd.DataFrame, pd.Data
         fq["contract_month"] = pd.to_datetime(fq["contract_month"]).dt.date
     cal = pd.read_csv(d / "calendar_events.csv")
     cal["scheduled_utc"] = pd.to_datetime(cal["scheduled_utc"], utc=True)
-    return data, vintages, fq, cal, pd.DataFrame()
+    docs = pd.DataFrame()
+    if (d / "fed_docs_scored.csv").exists():  # written by jobs.classify (Claude); absent without an API key
+        docs = pd.read_csv(d / "fed_docs_scored.csv")
+        if not docs.empty:
+            docs["published_utc"] = pd.to_datetime(docs["published_utc"], utc=True, errors="coerce", format="mixed")
+    return data, vintages, fq, cal, docs
 
 
 def main(argv: list[str] | None = None) -> int:

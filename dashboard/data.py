@@ -39,6 +39,9 @@ class Bundle:
     signals: dict = field(default_factory=dict)
     coefficients: pd.DataFrame = field(default_factory=pd.DataFrame)
     reports: dict[str, str] = field(default_factory=dict)  # name → markdown
+    fed_docs: pd.DataFrame = field(default_factory=pd.DataFrame)  # Claude-scored Fed documents (stance component c)
+    news_scored: pd.DataFrame = field(default_factory=pd.DataFrame)  # Claude news classification
+    messages: dict[str, str] = field(default_factory=dict)  # latest Persian Telegram message per kind (HTML)
 
     def series(self, key: str) -> pd.Series | None:
         df = self.data.get(key)
@@ -82,7 +85,7 @@ def load(root: Path | None = None) -> Bundle:
     from jobs.features import load_cache
 
     root = root or resolve_root()
-    data, vintages, fq, cal, _ = load_cache(root / "cache")
+    data, vintages, fq, cal, docs = load_cache(root / "cache")
     read_json = lambda n: json.loads((root / n).read_text(encoding="utf-8")) if (root / n).exists() else {}  # noqa: E731
     avail = read_json("data_availability.json")
     news_p = root / "cache" / "news.csv"
@@ -97,6 +100,9 @@ def load(root: Path | None = None) -> Bundle:
         coefficients=pd.read_csv(coef_p) if coef_p.exists() else pd.DataFrame(),
         reports={n: (root / f"{n}.md").read_text(encoding="utf-8") for n in
                  ("data_availability", "features_summary", "impact_summary", "signals") if (root / f"{n}.md").exists()},
+        fed_docs=docs,
+        news_scored=pd.read_csv(root / "cache" / "news_scored.csv") if (root / "cache" / "news_scored.csv").exists() else pd.DataFrame(),
+        messages={p.stem: p.read_text(encoding="utf-8") for p in sorted((root / "messages").glob("*.html"))},
     )
 
 
@@ -104,4 +110,4 @@ def analysis(b: Bundle, today) -> dict:
     """Phase 2 results (features, FedWatch, stance, regimes) computed from the bundle."""
     from jobs.features import compute_all
 
-    return compute_all(b.data, b.vintages, b.futures, b.calendar, pd.DataFrame(), today)
+    return compute_all(b.data, b.vintages, b.futures, b.calendar, b.fed_docs, today)
