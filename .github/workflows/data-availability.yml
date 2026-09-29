@@ -36,6 +36,9 @@ jobs:
       - name: Phase 3 impact coefficients & macro score
         if: success() || failure()
         run: python -m jobs.impact --from-cache output/cache
+      - name: Phase 4 technicals & signals
+        if: success() || failure()
+        run: python -m jobs.signals --from-cache output/cache
       - uses: actions/upload-artifact@v4
         if: always()
         with: {name: data-availability, path: output/}

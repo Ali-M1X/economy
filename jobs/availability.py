@@ -524,8 +524,16 @@ def write_cache(d: Path, results: dict[str, SeriesResult], vintages: dict[str, p
     rel = next(r for r in calendar.tracked_releases() if r["id"] == "fomc")
     ev = list(stash.get("calendar_fred", [])) + [calendar._event(rel, m["decision_date"], "federalreserve.gov")
                                                  for m in stash.get("fomc", [])]
-    pd.DataFrame([{"event_id": e["event_id"], "release_id": e["release_id"], "scheduled_utc": e["scheduled_utc"]}
-                  for e in ev], columns=["event_id", "release_id", "scheduled_utc"]).to_csv(d / "calendar_events.csv", index=False)
+    pd.DataFrame([{"event_id": e["event_id"], "release_id": e["release_id"], "name_en": e["name_en"],
+                   "name_fa": e["name_fa"], "importance": e["importance"], "scheduled_utc": e["scheduled_utc"]}
+                  for e in ev], columns=["event_id", "release_id", "name_en", "name_fa", "importance", "scheduled_utc"]) \
+        .to_csv(d / "calendar_events.csv", index=False)
+    # live market context for Phase 4 (display only: no history exists for these)
+    if stash.get("oi_hist") is not None and not stash["oi_hist"].empty:
+        stash["oi_hist"].to_csv(d / "oi_history_BTC.csv", index=False)
+    for asset in ("BTC", "PAXG"):
+        if f"book_{asset}" in stash:
+            stash[f"book_{asset}"][1].to_csv(d / f"orderbook_{asset}.csv", index=False)
 
 
 def cache_price_history(d: Path) -> list[ProbeReport]:

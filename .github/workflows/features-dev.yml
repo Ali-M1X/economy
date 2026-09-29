@@ -10,7 +10,8 @@ on:
         default: ""
   push:
     branches: ["claude/**"]
-    paths: ["features/**", "models/**", "backtest/**", "jobs/features.py", "jobs/impact.py",
+    paths: ["features/**", "models/**", "backtest/**", "signals/**", "technicals/**", "jobs/features.py", "jobs/impact.py",
+            "jobs/signals.py",
             ".github/workflows/features-dev.yml"]
 concurrency: {group: features-dev, cancel-in-progress: true}
 permissions:
@@ -46,6 +47,9 @@ jobs:
       - name: Phase 3 impact coefficients & macro score
         if: success() || failure()
         run: python -m jobs.impact --from-cache snapshot/cache
+      - name: Phase 4 technicals & signals
+        if: success() || failure()
+        run: python -m jobs.signals --from-cache snapshot/cache
       - uses: actions/upload-artifact@v4
         if: always()
         with: {name: analysis-outputs, path: "output/*"}

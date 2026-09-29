@@ -57,25 +57,44 @@ class TradeResult:
     exits: list = field(default_factory=list)
 
 
+class _TsView:
+    """Lazy timestamp lookup (ts[i] → pd.Timestamp) over int64 nanoseconds."""
+
+    def __init__(self, ns: np.ndarray, tz):
+        self.ns, self.tz = ns, tz
+
+    def __getitem__(self, i: int) -> pd.Timestamp:
+        return pd.Timestamp(int(self.ns[i]), tz=self.tz)
+
+
 def _slip(price: float, direction: int, bps: float, entering: bool) -> float:
     adverse = 1 if (direction > 0) == entering else -1  # buying pays up, selling receives less
     return price * (1 + adverse * bps / 1e4)
 
 
-def simulate(sig: Signal, bars: pd.DataFrame, costs: CostModel) -> TradeResult:
-    """bars: ts (bar open, sorted), open, high, low, close."""
+def as_arrays(bars: pd.DataFrame) -> dict:
+    """Convert bars once (tz-aware timestamps → int64 ns); simulate() on a DataFrame would redo it per trade."""
+    ts = pd.DatetimeIndex(bars["ts"])
+    # pandas ≥ 3 may store µs resolution; pin to ns so it matches Timestamp.value
+    return {"ts": ts.as_unit("ns").asi8, "tz": ts.tz, **{k: bars[k].to_numpy(dtype="float64") for k in ("open", "high", "low", "close")}}
+
+
+def simulate(sig: Signal, bars: pd.DataFrame | dict, costs: CostModel) -> TradeResult:
+    """bars: ts (bar open, sorted), open, high, low, close — a DataFrame or as_arrays(bars)."""
+    arr = bars if isinstance(bars, dict) else as_arrays(bars)
     d = sig.direction
     res = TradeResult(sig.tag, sig.time, d, filled=False)
-    start = bars["ts"].searchsorted(sig.time, side="right")  # first bar strictly after the signal bar close
-    if start >= len(bars):
+    o, h, l, c, ts_ns = arr["open"], arr["high"], arr["low"], arr["close"], arr["ts"]
+    start = int(np.searchsorted(ts_ns, pd.Timestamp(sig.time).as_unit("ns").value, side="right"))  # first bar after the signal
+    if start >= len(ts_ns):
         return res
-    o, h, l, c, ts = (bars[k].to_numpy() for k in ("open", "high", "low", "close", "ts"))
+    ts = _TsView(ts_ns, arr["tz"])
     # ── entry ──
     i = start
     if sig.entry is None:
         entry = _slip(o[i], d, costs.slippage_bps, True)
     else:
-        for i in range(start, min(start + sig.entry_window, len(bars))):
+        for i in range(start, min(start + sig.entry_window, len(ts_ns))):
             if l[i] <= sig.entry <= h[i] or (d > 0 and o[i] <= sig.entry) or (d < 0 and o[i] >= sig.entry):
                 break
         else:
@@ -97,7 +116,7 @@ def simulate(sig: Signal, bars: pd.DataFrame, costs: CostModel) -> TradeResult:
         remaining -= frac
         return px
 
-    last = min(i + sig.max_bars, len(bars) - 1)
+    last = min(i + sig.max_bars, len(ts_ns) - 1)
     j = i
     for j in range(i, last + 1):
         hit_stop = (l[j] <= stop) if d > 0 else (h[j] >= stop)
@@ -129,11 +148,12 @@ def run(signals: list[Signal], bars: pd.DataFrame, costs: CostModel | None = Non
         allow_overlap: bool = False) -> pd.DataFrame:
     """Simulate signals in time order. Without overlap, a signal arriving while a trade is open is skipped."""
     costs = costs or CostModel()
+    arr = bars if isinstance(bars, dict) else as_arrays(bars)
     out, busy_until = [], pd.Timestamp.min.tz_localize("UTC")
     for s in sorted(signals, key=lambda x: x.time):
         if not allow_overlap and s.time < busy_until:
             continue
-        r = simulate(s, bars, costs)
+        r = simulate(s, arr, costs)
         if r.filled and r.exit_time is not None:
             busy_until = r.exit_time
         out.append(asdict(r))

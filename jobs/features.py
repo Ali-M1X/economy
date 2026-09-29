@@ -208,6 +208,15 @@ def render(res: dict, stored: dict | None) -> str:
     return "\n".join(L)
 
 
+def current_state(res: dict) -> dict:
+    """Small machine-readable snapshot for later phases (signals risk section, dashboard, reports)."""
+    fw = res["fedwatch"]
+    return {"as_of": res["today"], "regime": res["regime_now"],
+            "fed_stance": {"score": res["stance"].score, "components": res["stance"].components},
+            "fedwatch_next": fw.iloc[0][["meeting", "p_cut", "p_hold", "p_hike"]].to_dict() if not fw.empty else None,
+            "curve_state": res["curve_state"]}
+
+
 def load_cache(d: Path) -> tuple[dict, dict, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     obs = pd.read_csv(d / "observations.csv.gz", parse_dates=["date"])
     data = {k: g[["date", "value"]].reset_index(drop=True) for k, g in obs.groupby("series_key")}
@@ -250,6 +259,7 @@ def main(argv: list[str] | None = None) -> int:
     md = render(res, stored)
     OUT_DIR.mkdir(exist_ok=True)
     (OUT_DIR / "features_summary.md").write_text(md, encoding="utf-8")
+    (OUT_DIR / "features_state.json").write_text(json.dumps(current_state(res), default=str, indent=1), encoding="utf-8")
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
             fh.write("\n\n" + md)
