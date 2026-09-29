@@ -11,7 +11,7 @@ on:
   push:
     branches: ["claude/**"]
     paths: ["features/**", "models/**", "backtest/**", "signals/**", "technicals/**", "jobs/features.py", "jobs/impact.py",
-            "jobs/signals.py", "dashboard/**", "core/fa.py",
+            "jobs/signals.py", "jobs/prepos.py", "collectors/binance_archive.py", "dashboard/**", "core/fa.py",
             ".github/workflows/features-dev.yml"]
 concurrency: {group: features-dev, cancel-in-progress: true}
 permissions:
@@ -50,6 +50,11 @@ jobs:
       - name: Phase 4 technicals & signals
         if: success() || failure()
         run: python -m jobs.signals --from-cache snapshot/cache
+      - uses: actions/cache/restore@v4
+        with: {path: state/archive, key: "mp-archive-${{ github.run_id }}", restore-keys: mp-archive-}
+      - name: Pre-positioning backtest
+        if: success() || failure()
+        run: python -m jobs.prepos --from-cache snapshot/cache --archive state/archive --state state
       - name: Phase 5 dashboard render check (real snapshot + fresh analysis outputs)
         if: success() || failure()
         run: |

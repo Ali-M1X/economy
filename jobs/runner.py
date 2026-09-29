@@ -26,7 +26,7 @@ _pipeline_lock = threading.Lock()
 
 
 def crons() -> list[str]:
-    return [scheduler.INTRADAY, scheduler.HEADSUP, scheduler.WEEKLY, *scheduler.RELEASE]
+    return [scheduler.INTRADAY, scheduler.HEADSUP, scheduler.WEEKLY, scheduler.PREPOS, *scheduler.RELEASE]
 
 
 _DOW = ["sun", "mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -43,7 +43,7 @@ def trigger(cron: str):
     return CronTrigger(minute=minute, hour=hour, day=day, month=month, day_of_week=dow, timezone="UTC")
 
 
-def fire(cron: str, data: Path, run_pipeline=pipeline.run, run_intraday=None) -> str:
+def fire(cron: str, data: Path, run_pipeline=pipeline.run, run_intraday=None, run_prepos=None) -> str:
     """What one cron firing does (returns the mode, for logging and tests)."""
     state = data / "state"
     (data / "heartbeat").touch()  # docker healthcheck: the runner fires at least every 15 minutes
@@ -51,6 +51,8 @@ def fire(cron: str, data: Path, run_pipeline=pipeline.run, run_intraday=None) ->
     log.info("cron %r → %s (%s)", cron, p.mode, p.reason)
     if p.mode == "intraday":
         (run_intraday or _intraday)(data, state)
+    elif p.mode == "prepos":
+        (run_prepos or _prepos)(data, state)
     elif p.mode in ("release", "headsup", "weekly"):
         ids = ",".join(e["event_id"] for e in p.events)
         if ids:
@@ -58,6 +60,20 @@ def fire(cron: str, data: Path, run_pipeline=pipeline.run, run_intraday=None) ->
         with _pipeline_lock:
             run_pipeline(p.mode, ids, p.trigger, data / "runs", state)
     return p.mode
+
+
+def _prepos(data: Path, state: Path) -> None:
+    """Hourly pre-positioning check on the current snapshot (model from the last full run), then alerts."""
+    current = data / "current"
+    if not (current / "prepos.json").exists():
+        log.info("prepos: no model yet (the first full run creates it)")
+        return
+    env = {**os.environ, "MACRO_PULSE_OUTPUT_DIR": str(current)}
+    for argv in (["jobs.prepos", "--from-cache", str(current / "cache"), "--state", str(state), "--refresh-live",
+                  "--live-only", str(current / "prepos.json")],
+                 ["jobs.notify", "prepos", "--root", str(current), "--state", str(state)]):
+        out = subprocess.run([sys.executable, "-m", *argv], capture_output=True, text=True, env=env)
+        sys.stdout.write(out.stdout[-2000:])
 
 
 def _intraday(data: Path, state: Path) -> None:

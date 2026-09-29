@@ -42,6 +42,7 @@ class Bundle:
     fed_docs: pd.DataFrame = field(default_factory=pd.DataFrame)  # Claude-scored Fed documents (stance component c)
     news_scored: pd.DataFrame = field(default_factory=pd.DataFrame)  # Claude news classification
     messages: dict[str, str] = field(default_factory=dict)  # latest Persian Telegram message per kind (HTML)
+    prepos: dict = field(default_factory=dict)  # pre-positioning backtest + live check (prepos.json)
 
     def series(self, key: str) -> pd.Series | None:
         df = self.data.get(key)
@@ -103,6 +104,7 @@ def load(root: Path | None = None) -> Bundle:
         fed_docs=docs,
         news_scored=pd.read_csv(root / "cache" / "news_scored.csv") if (root / "cache" / "news_scored.csv").exists() else pd.DataFrame(),
         messages={p.stem: p.read_text(encoding="utf-8") for p in sorted((root / "messages").glob("*.html"))},
+        prepos=read_json("prepos.json"),
     )
 
 

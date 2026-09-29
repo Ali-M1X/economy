@@ -31,6 +31,9 @@ import pandas as pd
 INTRADAY = "*/15 * * * *"
 HEADSUP = "40 14 * * *"          # 18:10 Tehran — evening before
 WEEKLY = "20 3 * * 6"            # Saturday 06:50 Tehran, after Friday's data
+PREPOS = "50 * * * *"            # hourly: pre-positioning check while a target release is ≤ 72 h away
+PREPOS_RELEASES = ("cpi", "pce", "nfp", "fomc")
+PREPOS_HORIZON = pd.Timedelta(hours=72)
 # ET release times 08:30, 10:00, 13:00, 14:00, 16:30 → UTC under EDT (−4) and EST (−5), +5 min
 RELEASE = ["35 12,13 * * 1-5", "5 14,15,17,18,19 * * 1-5", "35 20,21 * * 1-5"]
 RELEASE_WINDOW = pd.Timedelta(minutes=100)
@@ -61,6 +64,8 @@ def mode_for(schedule: str | None) -> str | None:
         return "headsup"
     if schedule == WEEKLY:
         return "weekly"
+    if schedule == PREPOS:
+        return "prepos"
     if schedule in RELEASE:
         return "release"
     return None
@@ -69,6 +74,11 @@ def mode_for(schedule: str | None) -> str | None:
 def reported(state: Path | None) -> set[str]:
     p = state / "reported_events.json" if state else None
     return set(json.loads(p.read_text()).get("ids", [])) if p and p.exists() else set()
+
+
+def _utc(t) -> pd.Timestamp:
+    t = pd.Timestamp(t)
+    return t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC")
 
 
 def due_releases(events: list[dict], now: pd.Timestamp, done: set[str]) -> list[dict]:
@@ -86,6 +96,17 @@ def plan(schedule: str | None, now: pd.Timestamp, state: Path | None, mode: str 
     mode = mode or mode_for(schedule)
     if mode is None:
         return Plan("none", reason=f"unknown schedule {schedule!r}")
+    if mode == "prepos":
+        if calendar_fn is None:
+            from collectors.calendar import upcoming
+
+            calendar_fn = lambda: upcoming(days=4)[0]  # noqa: E731
+        soon = [e for e in calendar_fn() if e["release_id"] in PREPOS_RELEASES
+                and now < _utc(e["scheduled_utc"]) <= now + PREPOS_HORIZON]
+        if not soon and schedule:  # a manual run always proceeds
+            return Plan("none", reason="no CPI/PCE/NFP/FOMC release in the next 72 h")
+        return Plan("prepos", [{**e, "scheduled_utc": _utc(e["scheduled_utc"]).isoformat()} for e in soon],
+                    reason="upcoming: " + ", ".join(e["event_id"] for e in soon))
     if mode != "release":
         return Plan(mode, reason=f"schedule {schedule!r}" if schedule else "manual")
     if calendar_fn is None:

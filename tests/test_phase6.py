@@ -265,8 +265,8 @@ def workflow_crons() -> list[str]:
 
 def test_workflow_crons_match_the_scheduler():
     crons = workflow_crons()
-    assert set(crons) == {scheduler.INTRADAY, scheduler.HEADSUP, scheduler.WEEKLY, *scheduler.RELEASE}
-    assert {scheduler.mode_for(c) for c in crons} == {"intraday", "headsup", "weekly", "release"}
+    assert set(crons) == {scheduler.INTRADAY, scheduler.HEADSUP, scheduler.WEEKLY, scheduler.PREPOS, *scheduler.RELEASE}
+    assert {scheduler.mode_for(c) for c in crons} == {"intraday", "headsup", "weekly", "prepos", "release"}
 
 
 def _cron_times(cron: str) -> set[tuple[int, int]]:
@@ -366,3 +366,35 @@ def test_claude_client_request_and_parsing(monkeypatch):
             claude.text_call("s", "u")
     finally:
         srv.shutdown()
+
+
+# ── pre-positioning: plan, alert, notify ─────────────────────────────────
+
+def test_prepos_plan_only_runs_when_a_target_release_is_near(tmp_path):
+    cpi = [{"event_id": "cpi-x", "release_id": "cpi", "scheduled_utc": NOW + pd.Timedelta(hours=30)}]
+    far = [{"event_id": "cpi-y", "release_id": "cpi", "scheduled_utc": NOW + pd.Timedelta(hours=80)},
+           {"event_id": "claims-z", "release_id": "claims", "scheduled_utc": NOW + pd.Timedelta(hours=5)}]
+    p = scheduler.plan(scheduler.PREPOS, NOW, tmp_path, calendar_fn=lambda: cpi)
+    assert p.mode == "prepos" and [e["event_id"] for e in p.events] == ["cpi-x"]
+    assert scheduler.plan(scheduler.PREPOS, NOW, tmp_path, calendar_fn=lambda: far).mode == "none"
+    assert scheduler.plan("", NOW, tmp_path, mode="prepos", calendar_fn=lambda: far).mode == "prepos"  # manual run
+
+
+def test_prepos_alert_and_notify_send_only_gated_signals_once(root, tmp_path):
+    state = tmp_path / "state"
+    assert notify.run("prepos", root, state, NOW, None, dry_run=True) == 0
+    assert notify.run("prepos", root, state, NOW, None, dry_run=True) == 0  # same release/asset → not repeated
+    sent = [p for p in telegram.OUTBOX.iterdir()]
+    assert len(sent) == 1  # demo: BTC passed the gate (signal), gold is blocked (watchlist) → dashboard only
+    txt = plain(sent[0].read_text(encoding="utf-8"))
+    assert "پیش‌موقعیت‌گیری" in txt and "بیت‌کوین" in txt and "R:R 1.75" in txt and "حد ضرر" in txt
+    assert "رانش قیمت" in txt and "زمینه‌ی زنده" in txt and messages.DISCLAIMER in txt
+
+
+def test_headsup_mentions_prepositioning_status(root):
+    f = facts_mod.load(root)
+    f.calendar = pd.DataFrame([{"event_id": f.prepos["live"][0]["event_id"], "release_id": "cpi", "name_en": "CPI",
+                                "name_fa": "CPI", "importance": 5, "scheduled_utc": NOW + pd.Timedelta(days=1)}])
+    f.prepos["live"] = [dict(r, event_id=f.calendar["event_id"].iloc[0]) for r in f.prepos["live"]]
+    txt = plain(messages.headsup(f, NOW) or "")
+    assert "پیش‌موقعیت‌گیری" in txt and "سیگنال فعال" in txt and "مسدود" in txt

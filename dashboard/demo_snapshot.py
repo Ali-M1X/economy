@@ -109,6 +109,27 @@ def build(out: Path, seed: int = 3, now: pd.Timestamp | None = None) -> Path:
     (out / "recent_releases.json").write_text(json.dumps([{
         "indicator": "cpi", "release_utc": (now - pd.Timedelta(hours=3)).isoformat(), "obs_date": f"{end - pd.DateOffset(months=1):%Y-%m-01}",
         "actual": 0.42, "expected": 0.25, "surprise": 0.17, "z": 1.8, "basis": "vs mean3 (no free consensus)"}]))
+    sel = {"n_events": 80, "n_signals": 41, "n_trades": 41, "win_rate": 0.44, "avg_r": -0.06, "p_r": 0.66}
+    cpi_T = now + pd.Timedelta(days=3)
+    comps = {"drift": 0.9, "steady": 0.7, "flow": 0.4}
+    (out / "prepos.json").write_text(json.dumps({
+        "as_of": now.isoformat(), "threshold": 1.5, "windows_h": [6, 12, 24, 48, 72], "notes": ["demo"], "context": {},
+        "backtest": {f"{r}:{a}": {"release": r, "asset": a, "events": 80, "period": ["2019-06-12", f"{end:%Y-%m-%d}"],
+                                   "per_window": {str(w): {**sel, "spearman": 0.05, "spearman_p": 0.6} for w in (6, 12, 24, 48, 72)},
+                                   "selected": sel if not (r == "cpi" and a == "BTC") else {**sel, "avg_r": 0.21, "p_r": 0.03},
+                                   "window_choices": {"24": 50, "48": 30}, "edge": r == "cpi" and a == "BTC",
+                                   "blocked_by": [] if (r == "cpi" and a == "BTC") else ["average R not positive (-0.06)"],
+                                   "model": {"selected_window": 24, "windows": {}}, "trades": []}
+                     for r in ("cpi", "pce", "nfp", "fomc") for a in ("BTC", "Gold")},
+        "live": [{"event_id": f"cpi-{cpi_T:%Y-%m-%d}", "release": "cpi", "name_fa": "شاخص قیمت مصرف‌کننده (CPI)", "asset": a,
+                  "release_utc": cpi_T.isoformat(), "status": st, "window_h": 24,
+                  "window_opens": (cpi_T - pd.Timedelta(hours=24)).isoformat(), "score": 1.8, "components": comps,
+                  "direction": "long", "triggered_at": now.isoformat(), "trigger_score": 1.6,
+                  "entry": px[a], "stop_loss": px[a] * 0.98, "targets": [px[a] * 1.02, px[a] * 1.035, px[a] * 1.05],
+                  "rr": [1.0, 1.75, 2.5], "exit_by": (cpi_T + pd.Timedelta(hours=24)).isoformat(),
+                  "blocked_by": [] if st == "signal" else ["average R not positive (-0.06)"], "backtest": sel,
+                  "book_imbalance": 0.12, "zq_drift_bp": -3.5}
+                 for a, st in (("BTC", "signal"), ("Gold", "watchlist"))]}, default=str))
     for n in ("signals", "impact_summary", "features_summary", "data_availability"):
         (out / f"{n}.md").write_text(f"# {n} (demo)\n\nsynthetic\n")
     return out

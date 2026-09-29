@@ -37,10 +37,19 @@ def _frame(rows: list[list], ts_unit: str = "ms") -> pd.DataFrame:
 
 # ─────────────────────────────── candles ───────────────────────────────
 
+def _frame_binance(rows: list[list]) -> pd.DataFrame:
+    """Binance klines also carry the taker-buy base volume (row[9]): the volume of aggressive buys. Kept as
+    `taker_buy` — the free, full-history order-flow imbalance series used by the pre-positioning model."""
+    df = _frame(rows)
+    tb = pd.DataFrame({"ts": pd.to_datetime(pd.to_numeric([r[0] for r in rows]), unit="ms", utc=True),
+                       "taker_buy": pd.to_numeric([r[9] if len(r) > 9 else None for r in rows], errors="coerce")})
+    return df.merge(tb.drop_duplicates("ts"), on="ts", how="left")
+
+
 def _binance_vision(symbol: str, interval: str, limit: int) -> pd.DataFrame:
     rows = get_json("binance_vision", "https://data-api.binance.vision/api/v3/klines",
                     params={"symbol": symbol, "interval": interval, "limit": min(limit, 1000)})
-    return _frame(rows)
+    return _frame_binance(rows)
 
 
 def _okx(symbol: str, interval: str, limit: int) -> pd.DataFrame:
@@ -97,7 +106,7 @@ def candles_history(asset: str, interval: str = "1h", start: str = "2017-08-17",
                                 "startTime": cursor, "limit": 1000})
         if not rows:
             break
-        frames.append(_frame(rows))
+        frames.append(_frame_binance(rows))
         cursor = int(rows[-1][0]) + ms
         if cursor > stop or len(rows) < 1000:
             break
@@ -270,6 +279,21 @@ def open_interest_history(asset: str = "BTC", interval: str = "1h", limit: int =
     if p.get("code") != "0" or not p.get("data"):
         raise SourceError("okx", f"open-interest-history: {p.get('code')} {p.get('msg')}")
     return parse_okx_oi_history(p["data"])
+
+
+def funding_history_okx(asset: str = "BTC", limit: int = 100) -> pd.DataFrame:
+    """OKX perpetual funding-rate history (8-hourly, newest first; 100 rows ≈ 33 days) → ts, funding_rate."""
+    p = get_json("okx", "https://www.okx.com/api/v5/public/funding-rate-history",
+                 params={"instId": PERP_SYMBOLS[asset]["okx"], "limit": min(limit, 100)})
+    if p.get("code") != "0" or not p.get("data"):
+        raise SourceError("okx", f"funding-rate-history: {p.get('code')} {p.get('msg')}")
+    return parse_okx_funding(p["data"])
+
+
+def parse_okx_funding(rows: list[dict]) -> pd.DataFrame:
+    df = pd.DataFrame({"ts": pd.to_datetime(pd.to_numeric([r["fundingTime"] for r in rows]), unit="ms", utc=True),
+                       "funding_rate": pd.to_numeric([r.get("realizedRate") or r["fundingRate"] for r in rows], errors="coerce")})
+    return df.dropna().sort_values("ts").reset_index(drop=True)
 
 
 def parse_okx_oi_history(rows: list[list]) -> pd.DataFrame:

@@ -531,6 +531,9 @@ def write_cache(d: Path, results: dict[str, SeriesResult], vintages: dict[str, p
         pd.DataFrame([{k: i.get(k) for k in ("id", "source", "published_utc", "title", "url", "summary")} for i in stash["news"]]) \
             .sort_values("published_utc", ascending=False, na_position="last").to_csv(d / "news.csv", index=False)
     # live market context for Phase 4 (display only: no history exists for these)
+    if stash.get("fomc"):  # every scheduled meeting on the Fed's calendar page (past years included) → event history
+        pd.DataFrame([{"decision_date": m["decision_date"], "statement_utc": m.get("statement_utc"), "sep": m.get("sep")}
+                      for m in stash["fomc"]]).dropna(subset=["statement_utc"]).to_csv(d / "fomc_meetings.csv", index=False)
     if stash.get("oi_hist") is not None and not stash["oi_hist"].empty:
         stash["oi_hist"].to_csv(d / "oi_history_BTC.csv", index=False)
     for asset in ("BTC", "PAXG"):

@@ -76,6 +76,23 @@ python -m dashboard.demo_snapshot /tmp/demo && MACRO_PULSE_SNAPSHOT_DIR=/tmp/dem
 
 **Hosting on Streamlit Community Cloud** (free): 1) set the repository variable `PUBLISH_SNAPSHOT=true` and run `data-availability` once, which publishes `https://github.com/<owner>/<repo>/releases/download/snapshot-latest/snapshot.tar.gz`; 2) on share.streamlit.io create an app from this repo, main file `dashboard/app.py`; 3) in the app's *Secrets*, add `MACRO_PULSE_SNAPSHOT_URL = "<that URL>"`. The dashboard needs no API keys. The snapshot is public macro/market data only; while the repo is public, so is the release asset.
 
+## Pre-positioning (front-run) signals
+`models/prepos.py`, `jobs/prepos.py`. These signals ask whether the market is already positioning for CPI, PCE, NFP or an FOMC decision before the number drops, and whether that positioning historically predicted the move after the release. They are separate from the post-release impact coefficients and signals.
+
+- **Inputs:** every input at a time *t* uses only data that existed at *t*, and every baseline comes from before the lead window opens:
+  - price drift vs the normal volatility of those hours of the week;
+  - steadiness (the t-statistic of the window's 15-min returns: a one-way move with abnormally low variance);
+  - taker-flow imbalance;
+  - the change in the 2-year yield (market-implied policy path);
+  - BTC open-interest and funding shifts;
+  - leading releases already published (ADP before NFP; CPI/PPI before PCE).
+
+  Fed funds futures drift and order-book imbalance have no free history. They are shown live but are not scored. See `DATA_GAPS.md`.
+- **Score:** each feature's direction is fitted on past events only. The score is the normalised sum. A signal is the first 15-min step inside the lead window with |score| ≥ 1.5. It trades on the following bars (market entry, fees and slippage), with a 1σ stop and targets at 1R / 1.75R / 2.5R, and closes at release + 24 h.
+- **Lead windows:** 6, 12, 24, 48 and 72 h are each tested walk-forward, out of sample. Each event's window is also chosen from past events only (nested). That nested track record is what the gate judges: at least 30 trades, average R > 0 and one-sided p < 0.05. The Phase 4 rule plus significance.
+- **Live:** an hourly job runs while a target release is ≤ 72 h away. Telegram alerts go out only for releases and assets that passed the gate. Blocked setups appear only on the dashboard tab *پیش‌موقعیت‌گیری*.
+- **Tests:** `tests/test_prepos.py` recomputes the features at historical timestamps with every input truncated to what existed then, and checks that later events cannot change earlier predictions. A planted edge must pass the gate and noise must not.
+
 ## Telegram & Claude (Phase 6)
 Messages (Persian, HTML):
 - **heads-up** the evening before a tracked release: time in Tehran, previous value, what a higher/lower number meant historically for BTC and gold, and the channel chain;
@@ -110,6 +127,7 @@ If any check fails, a health warning is sent instead of the report. The same war
 | daily 14:40 (18:10 Tehran) | headsup | full pipeline refresh → heads-up for tomorrow's releases (Tehran date) + health check |
 | 5 min after each release time, for both US DST offsets | release | only if a tracked release happened in the last 100 min and was not reported: wait until FRED shows the new value (≤ 2 h) → full pipeline → impact report + signals |
 | Saturday 03:20 (06:50 Tehran) | weekly | full pipeline (coefficients and backtests recomputed) → weekly summary |
+| hourly at :50 | prepos | only while CPI/PCE/NFP/FOMC is ≤ 72 h away: live pre-positioning check (model from the last full run) → alert if that release/asset has a proven out-of-sample edge |
 
 GitHub Actions limits to know:
 - cron is UTC only, hence the doubled release crons;

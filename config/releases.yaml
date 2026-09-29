@@ -4,6 +4,7 @@
 releases:
   - {id: cpi, name_en: "Consumer Price Index", name_fa: "شاخص قیمت مصرف‌کننده (CPI)", fred_series: CPIAUCSL, bls_title: "Consumer Price Index", time_et: "08:30", importance: 5, series_keys: [cpi, core_cpi]}
   - {id: nfp, name_en: "Employment Situation (NFP)", name_fa: "گزارش اشتغال (NFP)", fred_series: PAYEMS, bls_title: "Employment Situation", time_et: "08:30", importance: 5, series_keys: [nonfarm_payrolls, unemployment_rate, avg_hourly_earnings]}
+  - {id: adp, name_en: "ADP Employment Report", name_fa: "گزارش اشتغال ADP", fred_series: ADPMNUSNERSA, time_et: "08:15", importance: 3, series_keys: [adp_private_payrolls]}
   - {id: pce, name_en: "Personal Income and Outlays (PCE)", name_fa: "درآمد و مخارج شخصی (PCE)", fred_series: PCEPI, time_et: "08:30", importance: 5, series_keys: [pce, core_pce]}
   - {id: ppi, name_en: "Producer Price Index", name_fa: "شاخص قیمت تولیدکننده (PPI)", fred_series: PPIFIS, bls_title: "Producer Price Index", time_et: "08:30", importance: 4, series_keys: [ppi_final_demand]}
   - {id: jolts, name_en: "JOLTS", name_fa: "فرصت‌های شغلی (JOLTS)", fred_series: JTSJOL, bls_title: "Job Openings and Labor Turnover Survey", time_et: "10:00", importance: 4, series_keys: [jolts_openings]}

@@ -98,6 +98,7 @@ def headsup(f: Facts, now: pd.Timestamp) -> str | None:
         return None
     rel = releases_cfg()
     rcfg = {r["key"]: r for r in indicators_cfg()["releases"]}
+    pre = f.prepos.get("live", []) if getattr(f, "prepos", None) else []
     L = [f"📅 <b>هشدار یک روز قبل — انتشارهای فردا ({ltr(str(tomorrow))})</b>"]
     for e in ev.itertuples():
         r = rel.get(e.release_id, {})
@@ -121,6 +122,9 @@ def headsup(f: Facts, now: pd.Timestamp) -> str | None:
                 cold = direction_fa(-k) if k is not None else ("نزولی 🔴" if theory > 0 else "صعودی 🟢" if theory < 0 else "نامشخص")
                 basis = f"ضریب ۲۴ساعته {num(k, '{:.1f}', sign=True)}" if k is not None else "بر اساس نظریه؛ ضریب تاریخی ندارد"
                 L.append(f"   • {ASSET_FA[a]}: بالاتر از انتظار ← {hot}؛ پایین‌تر ← {cold} ({basis})")
+        line = prepos_line(pre, e.event_id)
+        if line:
+            L.append(line)
     L.append("\n«انتظار» = میانگین ۳ دوره قبل (اجماع تحلیلگران رایگان در دسترس نیست). ضریب‌ها همبستگی تاریخی‌اند، نه پیش‌بینی.")
     return "\n".join(L) + footer()
 
@@ -296,3 +300,61 @@ def news_alert(item: dict) -> str:
         L.append(f'<a href="{esc(item["url"])}">متن خبر</a>')
     L.append("\nطبقه‌بندی خودکار با Claude از روی تیتر؛ پیش از هر تصمیمی متن کامل را بخوانید.")
     return "\n".join(L) + footer()
+
+
+# ───────────────────────────── 7. pre-positioning (front-run) alert ─────────────────────────────
+
+FEATURE_FA = {"drift": "رانش قیمت نسبت به نوسان عادی همان ساعت‌ها", "steady": "یک‌طرفه و کم‌نوسان بودن حرکت (آماره t)",
+              "flow": "عدم‌توازن سفارش‌های تهاجمی (taker)", "rate": "تغییر بازده ۲ ساله (انتظار مسیر نرخ)",
+              "oi": "تغییر قراردادهای باز هم‌جهت با قیمت", "funding": "تغییر نرخ تأمین مالی (funding)",
+              "lead": "شگفتی داده‌ی پیشرو (ADP / CPI / PPI)"}
+PREPOS_STATUS_FA = {"signal": "سیگنال فعال", "watchlist": "مسدود (برتری اثبات‌نشده)", "quiet": "بدون نشانه",
+                    "waiting": "پنجره هنوز باز نشده", "no_model": "تاریخچه کافی نیست", "no_data": "داده‌ی اخیر نیست"}
+
+
+def prepos_alert(row: dict, bt: dict | None = None) -> str:
+    """A pre-positioning signal that passed the edge gate — sent before the release."""
+    a = row["asset"]
+    fmt = "{:,.0f}" if a == "BTC" else "{:,.2f}"
+    d = row["direction"]
+    L = [f"⏱ <b>سیگنال پیش‌موقعیت‌گیری (پیش از انتشار)</b> — {esc(row.get('name_fa') or row['release'])} · {ASSET_FA[a]}",
+         f"انتشار: {tehran(row['release_utc'])} (تهران) · پنجره‌ی پیش‌رو: {ltr(row['window_h'])} ساعت",
+         f"بازار پیش از انتشار موقعیت گرفته است: جهت <b>{word(d)}</b> · امتیاز {num(row['trigger_score'], '{:.2f}', sign=True)} "
+         f"(آستانه ±{ltr('1.5')}) از {tehran(row['triggered_at'])}", "", "<b>آنچه سیگنال را ساخت</b>"]
+    for k, v in sorted((row.get("components") or {}).items(), key=lambda kv: -abs(kv[1])):
+        L.append(f"• {FEATURE_FA.get(k, k)}: {num(v, '{:.2f}', sign=True)}")
+    if row.get("entry") is not None:
+        tps = "، ".join(f"هدف {i}: {num(t, fmt)} (R:R {ltr(f'{r:.2f}')})" for i, (t, r) in enumerate(zip(row["targets"], row["rr"]), 1))
+        L += ["", f"ورود: {num(row['entry'], fmt)} (بازار) · حد ضرر: {num(row['stop_loss'], fmt)}", tps,
+              f"خروج حداکثر: {tehran(row['exit_by'])} (۲۴ ساعت پس از انتشار)"]
+    s = row.get("backtest") or (bt or {}).get("selected") or {}
+    if s:
+        wr = "—" if s.get("win_rate") is None else ltr(f"{s['win_rate'] * 100:.0f}٪")
+        L.append(f"بک‌تست خارج از نمونه (پنجره انتخاب‌شده از گذشته): {ltr(s.get('n_trades', 0))} معامله، نرخ برد {wr}، "
+                 f"میانگین R {num(s.get('avg_r'), '{:.2f}', sign=True)}، p = {num(s.get('p_r'), '{:.3f}')}")
+    ctx = []
+    if row.get("zq_drift_bp") is not None:
+        ctx.append(f"تغییر نرخ ضمنی آتی وجوه فدرال از باز شدن پنجره: {num(row['zq_drift_bp'], '{:.1f}', sign=True)} واحد پایه")
+    if row.get("book_imbalance") is not None:
+        ctx.append(f"عدم‌توازن دفتر سفارش (±۱٪): {num(row['book_imbalance'], '{:.2f}', sign=True)}"
+                   + (f"، تغییر {num(row['book_imbalance_change'], '{:.2f}', sign=True)}" if row.get("book_imbalance_change") is not None else ""))
+    if ctx:
+        L += ["", "زمینه‌ی زنده (در امتیاز بک‌تست‌شده نیست؛ تاریخچه‌ی رایگان ندارد):", *[f"• {c}" for c in ctx]]
+    L.append("\nاین سیگنال پیش از انتشار داده است؛ عدد واقعی می‌تواند خلاف انتظار بازار باشد.")
+    return "\n".join(L) + footer()
+
+
+def prepos_line(rows: list[dict], event_id: str) -> str | None:
+    """One line per asset for the heads-up message."""
+    rs = [r for r in rows if r["event_id"] == event_id]
+    if not rs:
+        return None
+    parts = []
+    for r in rs:
+        st = PREPOS_STATUS_FA.get(r["status"], r["status"])
+        if r["status"] in ("signal", "watchlist"):
+            st += f" ({word(r['direction'])}، امتیاز {num(r.get('trigger_score'), '{:.2f}', sign=True)})"
+        elif r["status"] == "waiting" and r.get("window_opens"):
+            st += f" — باز می‌شود {tehran(r['window_opens'])}"
+        parts.append(f"{ASSET_FA[r['asset']]}: {st}")
+    return "⏱ پیش‌موقعیت‌گیری: " + " · ".join(parts)

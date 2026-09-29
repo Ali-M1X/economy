@@ -24,6 +24,25 @@ Status legend: **GAP** = not collected · **PROXY** = substitute collected and l
 | 16 | Economic calendar times | **LIMITED** | Official dates from the FRED release-dates API (working with the key) and the Fed FOMC calendar. **bls.gov blocks the GitHub runner** (HTTP 403 "Access Denied") for its ICS release calendar and RSS feed; the BLS **API** (`api.bls.gov`) still works and is used for the CPI cross-check. FRED release dates already cover every tracked BLS release, so nothing is lost. Times of day come from `config/releases.yaml` (agency-published standard times) | — |
 | 17 | Yahoo Finance data | **LIMITED** | Unofficial, free and delayed (about 10–20 min for futures). Yahoo can rate-limit datacenter IPs, so collectors retry on the second host and report failures | Polygon.io, Databento |
 
+## Pre-positioning (front-run) signals
+
+Which pre-release inputs are free with enough history to be **backtested**, and which are only shown live. Only backtestable inputs enter the Pre-Positioning Score that the out-of-sample edge gate judges.
+
+| Input | Status | Source used | Best paid option |
+|---|---|---|---|
+| BTC / gold price drift and steadiness before a release | **BACKTESTED** | Binance-mirror 15-min bars (BTC from 2017, PAXG from 2020-09) | — |
+| Order flow (aggressive buy vs sell) | **BACKTESTED (proxy)** | Taker-buy volume from the same Binance klines (spot) | Kaiko / Tardis trade-level data |
+| Order-book imbalance (bid/ask wall growth) | **LIVE ONLY** | Aggregated books at each run; history is built from our own snapshots from now on. Not in the backtested score | Tardis.dev / Kaiko historical order books |
+| Fed funds / SOFR futures drift before a release | **LIVE ONLY + PROXY** | Specific ZQ contracts from Yahoo are recorded each run (drift from our own snapshots). Expired contracts have no free history, so the **backtested** rate input is the daily 2-year Treasury yield (FRED DGS2, point in time) | CME DataMine (tick / daily history of all contracts) |
+| BTC open interest and funding before a release | **BACKTESTED from 2021-12** | Binance public data archive (data.binance.vision): 5-min open interest, monthly funding files. Live: OKX hourly OI and funding history. The two venues differ; each is z-scored against its own history | Coinglass / Laevitas history |
+| Gold open interest / funding | **GAP** | No free intraday history (COMEX OI is daily and published with a delay) | CME DataMine |
+| ADP employment ahead of NFP | **BACKTESTED** | FRED `ADPMNUSNERSA` with ALFRED vintages; surprise vs its 3-month trend, available from its own release (08:15 ET, two days before NFP) | — |
+| CPI / PPI ahead of PCE | **BACKTESTED** | The same month's CPI and PPI first-print surprises (published before PCE) | — |
+| Inflation nowcast ahead of CPI | **GAP (free, not wired)** | The Cleveland Fed inflation nowcast is free on its website, but there is no documented API or stable file | Truflation (paid) |
+| Whisper numbers (crowd-sourced consensus) | **GAP** | None free | Estimize |
+| Private payroll trackers other than ADP | **GAP** | Revelio / LinkUp / Homebase have no free machine-readable history | Revelio Labs, LinkUp |
+| Oil inventories (EIA weekly) | **NOT USED** | Free with a key (EIA API), but no tracked release depends on it | — |
+
 ## What needs the user's free keys
 
 - `FRED_API_KEY` unlocks ALFRED vintages (needed for look-ahead-free backtests of CPI, NFP, PCE, claims, etc.), series metadata (FRED's own `last_updated`, units and frequency) and FRED release dates. Without it, series still load through the keyless CSV, but **no vintages** are available.

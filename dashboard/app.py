@@ -20,7 +20,7 @@ from core.timeutil import TEHRAN  # noqa: E402
 from dashboard import charts, data  # noqa: E402
 from core.fa import fa, label, ltr, word  # noqa: E402
 from dashboard.cards import REGIME_FA, SECTIONS, STATUS  # noqa: E402
-from reports.messages import proxy_fa  # noqa: E402
+from reports.messages import FEATURE_FA, PREPOS_STATUS_FA, proxy_fa  # noqa: E402
 from dashboard.theme import CSS, tokens  # noqa: E402
 from features.fed_stance import FORMULA_FA  # noqa: E402
 from technicals.indicators import resample  # noqa: E402
@@ -206,7 +206,7 @@ def since(s: pd.Series | None, years: int = 10) -> pd.Series | None:
 
 # ───────────────────────────── tabs ─────────────────────────────
 
-TAB_NAMES = ["بیت‌کوین و طلا", *SECTIONS.keys(), "انتظارات نرخ", "تقویم و اخبار", "ضرایب اثر", "رژیم‌ها", "گزارش‌ها", "درباره داده‌ها"]
+TAB_NAMES = ["بیت‌کوین و طلا", "پیش‌موقعیت‌گیری", *SECTIONS.keys(), "انتظارات نرخ", "تقویم و اخبار", "ضرایب اثر", "رژیم‌ها", "گزارش‌ها", "درباره داده‌ها"]
 tabs = dict(zip(TAB_NAMES, st.tabs(TAB_NAMES)))
 
 with tabs["بیت‌کوین و طلا"]:
@@ -283,6 +283,82 @@ with tabs["بیت‌کوین و طلا"]:
         if res.get("risks"):
             st.markdown("**ریسک‌های فعلی:** " + " · ".join(map(tr, res["risks"])))
         st.divider()
+
+with tabs["پیش‌موقعیت‌گیری"]:
+    P = B.prepos or {}
+    st.info("سیگنال پیش‌موقعیت‌گیری: آیا بازار پیش از انتشار CPI، PCE، NFP یا تصمیم FOMC در یک جهت موقعیت گرفته است، و آیا این "
+            "موقعیت‌گیری در گذشته حرکت پس از انتشار را پیش‌بینی کرده؟ جدا از سیگنال‌های پس از انتشار. " + DISCLAIMER)
+    if not P:
+        st.caption("هنوز محاسبه نشده است (در اجرای کامل بعدی ساخته می‌شود).")
+    else:
+        live = P.get("live", [])
+        st.markdown("**انتشارهای پیش‌رو (۷۲ ساعت آینده)**")
+        if not live:
+            st.caption("انتشار مهمی در ۷۲ ساعت آینده نیست.")
+        for r in live:
+            with st.container(border=True):
+                head = f"**{r.get('name_fa') or r['release']}** · {'بیت‌کوین' if r['asset'] == 'BTC' else 'طلا'} · " \
+                       f"انتشار {ltr(fmt_tehran(r['release_utc']))} (تهران)"
+                st.markdown(head)
+                status = PREPOS_STATUS_FA.get(r["status"], r["status"])
+                icon = {"signal": "🎯", "watchlist": "👀", "quiet": "·", "waiting": "⏳"}.get(r["status"], "—")
+                line = f"{icon} وضعیت: **{status}**"
+                if r.get("window_h"):
+                    line += f" · پنجره‌ی پیش‌رو {ltr(r['window_h'])} ساعت (باز شدن {ltr(fmt_tehran(r['window_opens']))})"
+                if r.get("score") is not None:
+                    sc_txt = f"{r['score']:+.2f}"
+                    line += f" · امتیاز فعلی {ltr(sc_txt)}"
+                st.markdown(line)
+                if r.get("direction"):
+                    trig = f"{r['trigger_score']:+.2f}"
+                    st.markdown(f"جهت {word(r['direction'])} از {ltr(fmt_tehran(r['triggered_at']))} · امتیاز لحظه‌ی عبور {ltr(trig)}")
+                if r.get("entry") is not None:
+                    fp = (lambda v: f"{v:,.0f}") if r["asset"] == "BTC" else (lambda v: f"{v:,.2f}")  # noqa: E731
+                    st.markdown(f"ورود {fp(r['entry'])} · حد ضرر {fp(r['stop_loss'])} · اهداف "
+                                + "، ".join(f"{fp(t)} (R:R {rr:.2f})" for t, rr in zip(r["targets"], r["rr"])))
+                if r.get("blocked_by"):
+                    st.caption("مسدود: " + "؛ ".join(map(fa, r["blocked_by"])))
+                if r.get("components"):
+                    st.dataframe(pd.DataFrame([{"مؤلفه": FEATURE_FA.get(k, k), "سهم در امتیاز": v}
+                                               for k, v in sorted(r["components"].items(), key=lambda kv: -abs(kv[1]))]),
+                                 hide_index=True, width="stretch")
+                ctx = []
+                if r.get("zq_drift_bp") is not None:
+                    zq_txt = f"{r['zq_drift_bp']:+.1f}"
+                    ctx.append(f"تغییر نرخ ضمنی آتی وجوه فدرال: {ltr(zq_txt)} واحد پایه")
+                if r.get("book_imbalance") is not None:
+                    bk_txt = f"{r['book_imbalance']:+.2f}"
+                    ctx.append(f"عدم‌توازن دفتر سفارش: {ltr(bk_txt)}")
+                if ctx:
+                    st.caption("زمینه‌ی زنده (خارج از امتیاز بک‌تست‌شده): " + " · ".join(ctx))
+        st.markdown("**بک‌تست خارج از نمونه (پنجره‌ی هر رویداد فقط از روی رویدادهای گذشته انتخاب شده)**")
+        rows = []
+        for k, b in (P.get("backtest") or {}).items():
+            sel = b.get("selected", {})
+            rows.append({"انتشار": b["release"].upper(), "دارایی": "BTC" if b["asset"] == "BTC" else "طلا",
+                         "رویدادها": b.get("events"), "معاملات": sel.get("n_trades", 0), "نرخ برد": sel.get("win_rate"),
+                         "میانگین R": sel.get("avg_r"), "p": sel.get("p_r"),
+                         "برتری اثبات‌شده": "✅ بله" if b.get("edge") else "خیر",
+                         "دلیل": "؛ ".join(map(fa, b.get("blocked_by", []))) if not b.get("edge") else "",
+                         "پنجره‌ی فعلی (ساعت)": b.get("model", {}).get("selected_window")})
+        if rows:
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch",
+                         column_config={"نرخ برد": st.column_config.NumberColumn(format="percent")})
+            if not any(b.get("edge") for b in P["backtest"].values()):
+                st.warning("هیچ ترکیب انتشار/دارایی برتری خارج از نمونه‌ی معنادار نشان نداده است؛ بنابراین هیچ سیگنال "
+                           "پیش‌موقعیت‌گیری ارسال نمی‌شود و ستاپ‌ها فقط این‌جا نمایش داده می‌شوند.")
+            for k, b in P["backtest"].items():
+                with st.expander(f"جزئیات {b['release'].upper()} · {'BTC' if b['asset'] == 'BTC' else 'طلا'} — هر پنجره جداگانه"):
+                    pw = pd.DataFrame([{"پنجره (ساعت)": W, **v} for W, v in b.get("per_window", {}).items()])
+                    keep = {"پنجره (ساعت)": "پنجره (ساعت)", "n_trades": "معاملات", "avg_r": "میانگین R", "p_r": "p(R)",
+                            "spearman": "همبستگی رتبه‌ای با حرکت ۲۴ساعته", "spearman_p": "p", "hit_rate": "دقت جهت (سیگنال قوی)",
+                            "hit_p": "p جهت", "effect_bp": "اثر (واحد پایه)"}
+                    st.dataframe(pw[[c for c in keep if c in pw]].rename(columns=keep), hide_index=True, width="stretch")
+                    st.caption("p-value هر پنجره برای آزمون ۵ پنجره اصلاح نشده (بونفرونی: ×۵)؛ دروازه‌ی برتری فقط روی "
+                               "انتخاب تو در تو قضاوت می‌کند. تعداد رویدادهایی که هر پنجره انتخاب شد: "
+                               + "، ".join(f"{ltr(w)}h: {n}" for w, n in (b.get("window_choices") or {}).items()))
+    if P.get("notes"):
+        st.caption(" · ".join(P["notes"]))
 
 for section, cards_ in SECTIONS.items():
     with tabs[section]:
@@ -467,7 +543,8 @@ with tabs["گزارش‌ها"]:
             stamp = html_.split("-->", 1)[0].replace("<!--", "").strip() if html_.startswith("<!--") else ""
             with st.expander(f"{kinds.get(kind, kind)}" + (f" — {fmt_tehran(stamp)}" if stamp else ""), expanded=kind == "impact"):
                 body = html_.split("-->", 1)[1] if html_.startswith("<!--") else html_
-                st.markdown(f'<div dir="rtl">{body.strip().replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
+                body_html = body.strip().replace("\n", "<br>")
+                st.markdown(f'<div dir="rtl">{body_html}</div>', unsafe_allow_html=True)
     st.caption("گزارش‌های فنی خط لوله (به انگلیسی، برای بررسی دقیق اعداد). تاریخچه کامل گزارش‌ها پس از فعال شدن "
                "پایگاه داده (Supabase).")
     names = {"signals": "سیگنال‌ها و تکنیکال", "impact_summary": "ضرایب اثر", "features_summary": "شاخص‌ها و رژیم",

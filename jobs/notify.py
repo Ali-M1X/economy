@@ -123,12 +123,30 @@ def run(mode: str, root: Path, state: Path | None, now: pd.Timestamp, trigger: s
             _out("trigger_text", "خبر مهم: " + str(new.iloc[0].get("title_fa") or new.iloc[0]["title"])[:200])
         print(f"news: {len(new)} new important item(s), max importance {top}")
         return 0
+    if mode == "prepos":
+        # pre-positioning alerts: only rows whose release/asset passed the out-of-sample edge gate ("signal"),
+        # once per release and asset; blocked setups stay on the dashboard (same rule as Phase 4)
+        sent = set(_state_json(state, "prepos_sent.json").get("keys", []))
+        rows = (f.prepos or {}).get("live", [])
+        n = 0
+        for r in rows:
+            key = f"{r['event_id']}:{r['asset']}"
+            if r.get("status") != "signal" or key in sent:
+                continue
+            bt = (f.prepos.get("backtest") or {}).get(f"{r['release']}:{r['asset']}")
+            _send(messages.prepos_alert(r, bt), "prepos", dry_run, root)
+            sent.add(key)
+            n += 1
+        _save_state(state, "prepos_sent.json", {"keys": sorted(sent)[-300:]})
+        blocked = sum(1 for r in rows if r.get("status") == "watchlist")
+        print(f"prepos: {n} alert(s) sent; {blocked} setup(s) blocked by the edge gate (dashboard only)")
+        return 0
     raise SystemExit(f"unknown mode {mode}")
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["report", "weekly", "headsup", "news", "health"])
+    ap.add_argument("mode", choices=["report", "weekly", "headsup", "news", "health", "prepos"])
     ap.add_argument("--root", default="output")
     ap.add_argument("--state")
     ap.add_argument("--trigger", help="why this report runs (shown in the message)")

@@ -6,6 +6,8 @@ name: schedule
 #   release crons    release   only if a tracked release happened in the last 100 min and was not reported yet:
 #                              wait for the new value (≤ 2 h) → full pipeline → impact report + signals
 #   Sat 03:20 UTC    weekly    full refresh, coefficients and backtests recomputed → weekly summary
+#   hourly :50       prepos    only while CPI/PCE/NFP/FOMC is ≤ 72 h away: live pre-positioning check on the latest
+#                              snapshot (model from the last full run) → alert if the release/asset has a proven edge
 #
 # GitHub Actions limits: cron is UTC only (release crons cover both US DST offsets), runs can start several minutes
 # late or be skipped under load, the shortest interval is 5 min, and scheduled workflows run only from the default
@@ -15,6 +17,7 @@ on:
     - cron: "*/15 * * * *"
     - cron: "40 14 * * *"
     - cron: "20 3 * * 6"
+    - cron: "50 * * * *"
     - cron: "35 12,13 * * 1-5"
     - cron: "5 14,15,17,18,19 * * 1-5"
     - cron: "35 20,21 * * 1-5"
@@ -23,7 +26,7 @@ on:
       mode:
         description: "what to run now"
         type: choice
-        options: [intraday, headsup, release, weekly, report]
+        options: [intraday, headsup, release, weekly, report, prepos]
         default: report
 permissions: {contents: read}
 jobs:
@@ -104,6 +107,58 @@ jobs:
             state/news_scored.csv
             state/news_alerted.json
           key: mp-state-news-${{ github.run_id }}-${{ github.run_attempt }}
+
+  prepos:
+    needs: plan
+    if: needs.plan.outputs.mode == 'prepos'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions: {contents: read, actions: read}
+    concurrency: {group: prepos, cancel-in-progress: false}
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      DASHBOARD_URL: ${{ vars.DASHBOARD_URL }}
+      MACRO_PULSE_OUTPUT_DIR: snap
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r requirements.txt
+      - name: Find the latest full pipeline run
+        id: snap
+        env: {GH_TOKEN: "${{ github.token }}"}
+        run: |
+          RUN=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow data-availability.yml --status success \
+                --limit 1 --json databaseId -q '.[0].databaseId')
+          echo "run=$RUN" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        with: {name: data-availability, path: snap, run-id: "${{ steps.snap.outputs.run }}", github-token: "${{ github.token }}"}
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            state/zq_history.csv
+            state/book_history_BTC.csv
+            state/book_history_PAXG.csv
+            state/prepos_sent.json
+          key: mp-state-prepos-${{ github.run_id }}
+          restore-keys: mp-state-prepos-
+      - name: Live pre-positioning check
+        run: python -m jobs.prepos --from-cache snap/cache --state state --refresh-live --live-only snap/prepos.json
+      - name: Telegram (only releases/assets with a proven out-of-sample edge)
+        run: python -m jobs.notify prepos --root snap --state state
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: prepos-live, path: "snap/prepos.json\nsnap/prepos.md\nsnap/outbox/"}
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: |
+            state/zq_history.csv
+            state/book_history_BTC.csv
+            state/book_history_PAXG.csv
+            state/prepos_sent.json
+          key: mp-state-prepos-${{ github.run_id }}-${{ github.run_attempt }}
 
   pipeline:
     needs: plan

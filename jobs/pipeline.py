@@ -38,6 +38,8 @@ def steps(mode: str, events: str, trigger: str, out: Path, state: Path) -> list[
     s += [("features", py + ["jobs.features", "--from-cache", cache], True),
           ("impact", py + ["jobs.impact", "--from-cache", cache], True),
           ("signals", py + ["jobs.signals", "--from-cache", cache], True),
+          ("pre-positioning", py + ["jobs.prepos", "--from-cache", cache, "--archive", str(state.parent / "archive"),
+                                    "--state", str(state)], False),
           ("health", py + ["jobs.health", "--root", str(out)], False)]
     notify = {"release": ["report", "--trigger", trigger], "report": ["report", "--trigger", trigger],
               "weekly": ["weekly"], "headsup": ["headsup"]}.get(mode)

@@ -22,7 +22,7 @@ def names(steps):
 def test_pipeline_steps_per_mode(tmp_path, monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     none = pipeline.steps("none", "", "", tmp_path, tmp_path / "state")
-    assert names(none) == ["collect + validate", "features", "impact", "signals", "health"]
+    assert names(none) == ["collect + validate", "features", "impact", "signals", "pre-positioning", "health"]
     rel = pipeline.steps("release", "cpi-2026-10-15", "انتشار CPI", tmp_path, tmp_path / "state")
     assert names(rel)[0] == "wait for new values" and names(rel)[-1] == "mark reported"
     assert "classify" in names(rel) and "telegram" in names(rel)
@@ -60,7 +60,7 @@ def test_pipeline_swaps_current_atomically_and_prunes(tmp_path, monkeypatch):
 
 
 def test_runner_crons_match_github_and_use_cron_weekdays():
-    assert runner.crons() == [scheduler.INTRADAY, scheduler.HEADSUP, scheduler.WEEKLY, *scheduler.RELEASE]
+    assert runner.crons() == [scheduler.INTRADAY, scheduler.HEADSUP, scheduler.WEEKLY, scheduler.PREPOS, *scheduler.RELEASE]
     assert set(runner.crons()) == set(workflow_crons())
     t0 = dt.datetime(2026, 9, 29, 12, 0, tzinfo=dt.timezone.utc)  # a Tuesday
     assert runner.trigger(scheduler.WEEKLY).get_next_fire_time(None, t0).strftime("%a %H:%M") == "Sat 03:20"
@@ -104,6 +104,6 @@ def test_compose_services_and_env_example():
     assert "ENABLE_DB_STORAGE=false" in env
 
 
-@pytest.mark.parametrize("cron", [scheduler.INTRADAY, scheduler.HEADSUP, scheduler.WEEKLY, *scheduler.RELEASE])
+@pytest.mark.parametrize("cron", [scheduler.INTRADAY, scheduler.HEADSUP, scheduler.WEEKLY, scheduler.PREPOS, *scheduler.RELEASE])
 def test_every_cron_maps_to_a_mode(cron):
-    assert scheduler.mode_for(cron) in {"intraday", "headsup", "weekly", "release"}
+    assert scheduler.mode_for(cron) in {"intraday", "headsup", "weekly", "prepos", "release"}

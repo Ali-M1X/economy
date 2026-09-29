@@ -88,7 +88,7 @@ def test_app_renders_without_exceptions(demo_dir, monkeypatch):
     app = os.path.join(os.path.dirname(__file__), "..", "dashboard", "app.py")
     at = AppTest.from_file(app, default_timeout=240).run()
     assert not at.exception, [e.value for e in at.exception]
-    assert len(at.tabs) == 15
+    assert len(at.tabs) == 16
     assert len(at.metric) > 40
     assert any("نمایشی" in w.value for w in at.warning)  # demo banner
     top = {m.label: m.value for m in at.metric[:6]}

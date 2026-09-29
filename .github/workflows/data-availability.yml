@@ -82,6 +82,21 @@ jobs:
       - name: Phase 4 technicals & signals
         if: success() || failure()
         run: python -m jobs.signals --from-cache output/cache
+      - name: Restore Binance futures archive (open interest, funding history)
+        uses: actions/cache/restore@v4
+        with:
+          path: state/archive
+          key: mp-archive-${{ github.run_id }}
+          restore-keys: mp-archive-
+      - name: Pre-positioning backtest (walk-forward per release × asset × lead window) and live check
+        if: success() || failure()
+        run: python -m jobs.prepos --from-cache output/cache --archive state/archive --state state
+      - name: Save Binance futures archive
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state/archive
+          key: mp-archive-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Health check
         if: success() || failure()
         run: python -m jobs.health --root output
