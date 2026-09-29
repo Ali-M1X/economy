@@ -1,0 +1,24 @@
+name: telegram-check
+# Manual check of the TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID secrets: getMe validates the token, getChat the chat id.
+# Neither secret is printed (only the token's length/format and the bot's public @username).
+on:
+  workflow_dispatch:
+    inputs:
+      send_test:
+        description: "also send a short test message"
+        type: boolean
+        default: true
+permissions: {contents: read}
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r requirements.txt
+      - env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m notify.telegram --check ${{ inputs.send_test && '--send-test' || '' }}
