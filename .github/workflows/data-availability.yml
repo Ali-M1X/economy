@@ -39,6 +39,30 @@ jobs:
       - name: Phase 4 technicals & signals
         if: success() || failure()
         run: python -m jobs.signals --from-cache output/cache
+      - name: Phase 5 dashboard render check
+        if: success() || failure()
+        run: python -m dashboard.smoke output
       - uses: actions/upload-artifact@v4
         if: always()
         with: {name: data-availability, path: output/}
+
+  # Opt-in: publish output/ as the `snapshot-latest` release asset that the hosted dashboard reads
+  # (MACRO_PULSE_SNAPSHOT_URL). Off unless the repository variable PUBLISH_SNAPSHOT is "true". The data is public
+  # market/macro data only — no credentials are ever written to output/. Only this job can write to the repo.
+  publish-snapshot:
+    needs: report
+    if: ${{ vars.PUBLISH_SNAPSHOT == 'true' }}
+    runs-on: ubuntu-latest
+    permissions: {contents: write}
+    steps:
+      - uses: actions/download-artifact@v4
+        with: {name: data-availability, path: output}
+      - name: Upload snapshot-latest release asset
+        env: {GH_TOKEN: "${{ github.token }}"}
+        run: |
+          tar czf snapshot.tar.gz output
+          ls -lh snapshot.tar.gz
+          gh release view snapshot-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create snapshot-latest --repo "$GITHUB_REPOSITORY" --prerelease --title "Data snapshot (latest)" \
+              --notes "Rolling data snapshot for the dashboard. Replaced on every data-availability run."
+          gh release upload snapshot-latest snapshot.tar.gz --repo "$GITHUB_REPOSITORY" --clobber

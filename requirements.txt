@@ -10,3 +10,5 @@ websockets>=13
 python-dotenv>=1.0
 scipy>=1.13
 hmmlearn>=0.3
+streamlit>=1.60,<2
+plotly>=6,<8
