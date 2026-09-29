@@ -27,6 +27,21 @@ METRICS_START = pd.Timestamp("2021-12-01")
 FUNDING_START = pd.Timestamp("2019-09-01")
 
 
+def to_utc(values) -> pd.Series:
+    """Timestamps in any mix of formats → UTC. Funding times carry millisecond offsets (00:00:00.002), so a saved CSV
+    mixes "…00:00:00+00:00" and "…00:00:00.002000+00:00"; pandas infers one format from the first row and fails on the
+    other. ISO 8601 parsing accepts both; `mixed` (per element) is the fallback, and unparseable values become NaT."""
+    s = values if isinstance(values, pd.Series) else pd.Series(values)
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return pd.to_datetime(s, utc=True)
+    if pd.api.types.is_numeric_dtype(s):  # epoch milliseconds
+        return pd.to_datetime(s, unit="ms", utc=True)
+    try:
+        return pd.to_datetime(s, utc=True, format="ISO8601")
+    except (ValueError, TypeError):
+        return pd.to_datetime(s, utc=True, format="mixed", errors="coerce")
+
+
 def _csv_from_zip(raw: bytes) -> pd.DataFrame:
     with zipfile.ZipFile(io.BytesIO(raw)) as z:
         name = z.namelist()[0]
@@ -43,7 +58,7 @@ def parse_metrics(df: pd.DataFrame) -> pd.DataFrame:
                           "count_toptrader_long_short_ratio", "sum_toptrader_long_short_ratio",
                           "count_long_short_ratio", "sum_taker_long_short_vol_ratio"][:df.shape[1]], axis=1)
     return pd.DataFrame({
-        "ts": pd.to_datetime(df["create_time"], utc=True),
+        "ts": to_utc(df["create_time"]),
         "open_interest": pd.to_numeric(df["sum_open_interest"], errors="coerce"),
         "open_interest_usd": pd.to_numeric(df["sum_open_interest_value"], errors="coerce"),
         "taker_ls_ratio": pd.to_numeric(df.get("sum_taker_long_short_vol_ratio"), errors="coerce"),
@@ -101,9 +116,12 @@ def update(archive_dir: Path, symbol: str = "BTCUSDT", today: pd.Timestamp | Non
     for kind in ("metrics", "funding"):
         if new[kind]:
             p = archive_dir / f"{symbol}_{kind}.csv.gz"
-            old = pd.read_csv(p, parse_dates=["ts"]) if p.exists() else pd.DataFrame()
+            old = pd.read_csv(p) if p.exists() else pd.DataFrame()
+            if not old.empty:
+                old["ts"] = to_utc(old["ts"])
             allf = pd.concat([old, *new[kind]], ignore_index=True)
-            allf["ts"] = pd.to_datetime(allf["ts"], utc=True)
+            allf["ts"] = to_utc(allf["ts"])
+            allf = allf.dropna(subset=["ts"])
             allf.drop_duplicates("ts").sort_values("ts").to_csv(p, index=False)
     idx["missing"] = sorted(missing)
     idx_p.write_text(json.dumps(idx))
@@ -116,6 +134,6 @@ def load(archive_dir: Path, symbol: str = "BTCUSDT") -> tuple[pd.DataFrame, pd.D
     for kind in ("metrics", "funding"):
         p = archive_dir / f"{symbol}_{kind}.csv.gz"
         df = pd.read_csv(p) if p.exists() else pd.DataFrame(columns=["ts"])
-        df["ts"] = pd.to_datetime(df["ts"], utc=True)
-        out.append(df.sort_values("ts").reset_index(drop=True))
+        df["ts"] = to_utc(df["ts"])
+        out.append(df.dropna(subset=["ts"]).sort_values("ts").reset_index(drop=True))
     return out[0], out[1]

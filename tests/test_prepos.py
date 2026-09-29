@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import io
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -273,3 +276,38 @@ def test_okx_funding_and_binance_taker_volume_parsing():
     rows = [[1704067200000, "1", "2", "0.5", "1.5", "10", 0, "15", 5, "6", "9", "0"]]
     b = crypto._frame_binance(rows)
     assert b["taker_buy"].iloc[0] == 6.0 and b["volume"].iloc[0] == 10.0
+
+
+def test_archive_timestamps_with_mixed_formats_load_and_merge(tmp_path, monkeypatch):
+    """Funding times carry millisecond offsets, so the saved CSV mixes formats (live failure:
+    'time data "2020-01-02 00:00:00.002000+00:00" doesn't match format')."""
+    import zipfile
+
+    from collectors import binance_archive as ba
+
+    got = ba.to_utc(["2020-01-01 16:00:00+00:00", "2020-01-02 00:00:00.002000+00:00", "2020-01-02T08:00:00Z",
+                     "2020-01-02 16:00:00", "not a date"])
+    assert list(got[:4]) == [pd.Timestamp("2020-01-01 16:00", tz=UTC), pd.Timestamp("2020-01-02 00:00:00.002", tz=UTC),
+                             pd.Timestamp("2020-01-02 08:00", tz=UTC), pd.Timestamp("2020-01-02 16:00", tz=UTC)]
+    assert pd.isna(got[4])
+    assert ba.to_utc(pd.Series([1577923200002]))[0] == pd.Timestamp("2020-01-02 00:00:00.002", tz=UTC)
+
+    pd.DataFrame({"ts": ["2020-01-01 16:00:00+00:00", "2020-01-02 00:00:00.002000+00:00", "2020-01-02 08:00:00+00:00"],
+                  "funding_rate": [1e-4, 2e-4, 3e-4]}).to_csv(tmp_path / "BTCUSDT_funding.csv.gz", index=False)
+    _, ff = ba.load(tmp_path)
+    assert len(ff) == 3 and str(ff["ts"].dt.tz) == "UTC" and ff["ts"].is_monotonic_increasing
+
+    # an incremental run appends to that file and reads it back again
+    def zipped(text):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("f.csv", text)
+        return buf.getvalue()
+    (tmp_path / "BTCUSDT_index.json").write_text(json.dumps({"metrics": [], "funding": ["f:2020-01"], "missing": []}))
+    monkeypatch.setattr(ba, "_fetch", lambda url: zipped("calc_time,funding_interval_hours,last_funding_rate\n"
+                                                         "1580515200001,8,0.0004\n") if "2020-02" in url else None)
+    monkeypatch.setattr(ba, "FUNDING_START", pd.Timestamp("2020-01-01"))
+    monkeypatch.setattr(ba, "METRICS_START", pd.Timestamp("2020-03-01"))
+    ba.update(tmp_path, today=pd.Timestamp("2020-03-02", tz=UTC))
+    _, ff = ba.load(tmp_path)
+    assert len(ff) == 4 and ff["ts"].iloc[-1] == pd.Timestamp("2020-02-01 00:00:00.001", tz=UTC)
