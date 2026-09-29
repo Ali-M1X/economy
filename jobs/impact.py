@@ -192,6 +192,8 @@ def scores(coefs: pd.DataFrame, wk: pd.DataFrame, mo: pd.DataFrame, evs: pd.Data
                 "note": "no tracked release in the last 24h" if bucket == "short" and short_state.empty else None,
                 "top": [{"indicator": i, "coef": round(r.coef, 2), "state": round(r.state, 2),
                          "contribution": round(r.contribution, 1)} for i, r in br.head(6).iterrows()],
+                # every indicator's current move (change in σ, clipped to ±2, halved → −1…+1), for the reports' table
+                "state": {k: round(float(v), 2) for k, v in state.items() if np.isfinite(v)},
             }
     return out
 
@@ -206,6 +208,16 @@ def recent_releases(evs: pd.DataFrame, now: pd.Timestamp, days: int = 7) -> list
              "obs_date": f"{pd.Timestamp(r.obs_date):%Y-%m-%d}", "actual": round(float(r.actual), 4),
              "expected": round(float(r.expected), 4), "surprise": round(float(r.surprise), 4), "z": round(float(r.z), 2),
              "basis": r.surprise_basis} for r in e.itertuples()]
+
+
+def latest_surprises(evs: pd.DataFrame) -> dict[str, dict]:
+    """The most recent first-print surprise of every release indicator (for the reports' indicator table)."""
+    if evs.empty:
+        return {}
+    last = evs.sort_values("release_utc").groupby("indicator").tail(1)
+    return {r.indicator: {"release_utc": pd.Timestamp(r.release_utc).isoformat(), "obs_date": f"{pd.Timestamp(r.obs_date):%Y-%m-%d}",
+                          "actual": round(float(r.actual), 4), "expected": round(float(r.expected), 4),
+                          "z": round(float(r.z), 2), "basis": r.surprise_basis} for r in last.itertuples()}
 
 
 # ───────────────────────────── report ─────────────────────────────
@@ -300,6 +312,7 @@ def main(argv: list[str] | None = None) -> int:
     coefs.to_csv(OUT_DIR / "impact_coefficients.csv", index=False)
     (OUT_DIR / "macro_scores.json").write_text(json.dumps(sc, indent=1), encoding="utf-8")
     (OUT_DIR / "recent_releases.json").write_text(json.dumps(recent_releases(evs, now), indent=1), encoding="utf-8")
+    (OUT_DIR / "latest_surprises.json").write_text(json.dumps(latest_surprises(evs), indent=1), encoding="utf-8")
     if args.store:
         print(f"stored: {store(coefs, sc, now)}")
     md = render(coefs, evs, sc, now)

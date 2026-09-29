@@ -1,4 +1,4 @@
-"""Claude-written causal explanation for the impact report — composed only from the facts and the channel table.
+"""Claude-written causal chain for each asset's report — composed only from the facts and the template sentences.
 
 The spec's rule "no invented figures" is enforced, not just requested: every number in Claude's text must appear in
 the facts (after rounding), otherwise the text is rejected and the deterministic explanation is used instead.
@@ -12,21 +12,8 @@ import re
 import numpy as np
 
 from llm import claude
-from reports.facts import Facts, indicators_cfg
-
-SYSTEM = """You write the causal-explanation paragraph of a Persian (Farsi) report on how US macro data affects Bitcoin
-and gold. You receive FACTS (JSON) computed by code, and a CHANNELS table.
-
-Rules:
-- Write in Persian. Keep tickers and indicator names (CPI, DXY, FOMC, M2 …) in English.
-- Use ONLY numbers that appear in FACTS, written exactly as they appear there (you may round to fewer decimals).
-  Never compute, estimate or invent any other number, date or percentage.
-- Explain effects ONLY through the transmission channels in CHANNELS, as chains such as
-  "CPI بالاتر از انتظار ← احتمال افزایش نرخ ← بازده واقعی بالاتر ← دلار قوی‌تر ← منفی برای طلا و BTC".
-- Cover: what changed (releases, if any), the chain of effects, then the implication for BTC and for gold in the short
-  (24h), medium (4 weeks) and long (6 months) horizon, citing the macro scores and the largest contributors.
-- If the evidence is weak or conflicting (scores near zero, coefficients opposite to theory), say so plainly.
-- Plain text only, no Markdown, no HTML. At most 220 words. No investment advice."""
+from notify.telegram import esc
+from reports.facts import Facts
 
 _NUM = re.compile(r"[-+−]?\d[\d,٬]*(?:[.٫]\d+)?")
 _FA_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩٫٬−", "01234567890123456789.,-")
@@ -85,42 +72,41 @@ def unknown_numbers(text: str, facts: dict) -> list[float]:
     return bad
 
 
-def fallback(summary: dict) -> str:
-    """Deterministic explanation (used without an API key or when Claude's text fails validation)."""
-    ch = summary.get("channels_fa", {})
-    parts = []
-    for r in summary.get("releases", [])[:3]:
-        hot = "بالاتر" if r["z"] > 0 else "پایین‌تر"
-        path = " ← ".join(ch.get(c, c) for c in r.get("channels", []))
-        parts.append(f"{r['name_fa']} {hot} از انتظار آمد؛ مسیر اثر: {path}.")
-    for a, fa_name in (("BTC", "بیت‌کوین"), ("Gold", "طلا")):
-        x = summary["assets"].get(a, {})
-        med = (x.get("macro_score") or {}).get("medium")
-        top = (x.get("top_contributors") or {}).get("medium", [])[:2]
-        if med is None:
-            continue
-        tone = "مثبت" if med >= 15 else "منفی" if med <= -15 else "خنثی و ضعیف"
-        drivers = "، ".join(f"{t['name_fa']} ({t['contribution']:+.1f})" for t in top)
-        parts.append(f"برای {fa_name} برآیند کلان ۴ هفته {tone} است ({med:+.0f})" + (f"؛ بیشترین سهم: {drivers}." if drivers else "."))
-    return " ".join(parts)
+ASSET_SYSTEM = """You write the causal-chain section of a Persian (Farsi) report on ONE asset ({asset_fa}). You receive FACTS
+(JSON, computed by code) and TEMPLATE sentences already built from those facts.
+
+Rules:
+- Write in Persian. Keep tickers and indicator names (CPI, DXY, FOMC …) in English where the facts do.
+- Use ONLY numbers that appear in FACTS or TEMPLATE, written as they appear (you may round). Never add any other number.
+- 3 to 6 short, complete sentences, one per line, numbered "1." "2." …; each sentence states cause → effect explicitly
+  (what changed, through which channel, and what it means for {asset_fa}). No lists of tickers, no arrows.
+- Cover only {asset_fa}. If the evidence is weak (scores near zero, coefficients below 1), say so plainly.
+- Plain text only, no Markdown, no HTML, no investment advice."""
 
 
-def explain(f: Facts) -> tuple[str, str]:
-    """(text, source) — source is "claude" or "template"."""
-    summary = f.summary()
+def asset_facts(f: Facts, asset: str) -> dict:
+    s = f.summary()
+    return {"as_of": s["as_of"], "regime": s["regime"], "fed_stance": s["fed_stance"], "releases": s["releases"],
+            "asset": asset, **s["assets"].get(asset, {})}
+
+
+def explain_asset(f: Facts, asset: str, template: list[str]) -> tuple[list[str], str]:
+    """(sentences, source) for one asset — Claude's rewrite of the template when it passes the number check."""
     if not claude.available():
-        return fallback(summary), "template"
-    cfg = indicators_cfg()
-    user = ("FACTS:\n" + json.dumps(summary, ensure_ascii=False, default=str) +
-            "\n\nCHANNELS:\n" + json.dumps({k: v["en"] + " | " + v["fa"] for k, v in cfg["channels"].items()}, ensure_ascii=False))
-    try:
-        text = claude.text_call(SYSTEM, user, max_tokens=4000, effort="medium")
-    except claude.LLMError as e:
-        print(f"::warning::Claude explanation unavailable ({e}); using the template")
-        return fallback(summary), "template"
-    bad = unknown_numbers(text, summary)
-    if bad:
-        print(f"::warning::Claude explanation used numbers not in the facts {bad[:5]}; using the template")
-        return fallback(summary), "template"
-    return text.strip(), "claude"
+        return template, "template"
+    from reports.messages import ASSET_FA
 
+    facts = asset_facts(f, asset)
+    user = ("FACTS:\n" + json.dumps(facts, ensure_ascii=False, default=str) + "\n\nTEMPLATE:\n" + "\n".join(template))
+    try:
+        text = claude.text_call(ASSET_SYSTEM.format(asset_fa=ASSET_FA[asset]), user, max_tokens=3000, effort="medium")
+    except claude.LLMError as e:
+        print(f"::warning::Claude explanation for {asset} unavailable ({e}); using the template")
+        return template, "template"
+    bad = unknown_numbers(text, {"facts": facts, "template": template})
+    if bad:
+        print(f"::warning::Claude explanation for {asset} used numbers not in the facts {bad[:5]}; using the template")
+        return template, "template"
+    lines = [re.sub(r"^\s*[\d۰-۹]+[.)]\s*", "", ln).strip() for ln in text.strip().splitlines()]
+    lines = [esc(ln) for ln in lines if ln]  # the template is already HTML-safe; Claude's text is escaped here
+    return (lines or template), ("claude" if lines else "template")

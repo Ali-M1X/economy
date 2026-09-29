@@ -120,7 +120,8 @@ def headsup(f: Facts, now: pd.Timestamp) -> str | None:
                 theory = cfg.get("theory", {}).get(a, 0)
                 hot = direction_fa(k) if k is not None else ("صعودی 🟢" if theory > 0 else "نزولی 🔴" if theory < 0 else "نامشخص")
                 cold = direction_fa(-k) if k is not None else ("نزولی 🔴" if theory > 0 else "صعودی 🟢" if theory < 0 else "نامشخص")
-                basis = f"ضریب ۲۴ساعته {num(k, '{:.1f}', sign=True)}" if k is not None else "بر اساس نظریه؛ ضریب تاریخی ندارد"
+                basis = (f"ضریب اثر ۲۴ ساعته {num(k, '{:.1f}', sign=True)} از ±۱۰" if k is not None
+                         else "بر اساس نظریه؛ ضریب تاریخی ندارد")
                 L.append(f"   • {ASSET_FA[a]}: بالاتر از انتظار ← {hot}؛ پایین‌تر ← {cold} ({basis})")
         line = prepos_line(pre, e.event_id)
         if line:
@@ -129,74 +130,7 @@ def headsup(f: Facts, now: pd.Timestamp) -> str | None:
     return "\n".join(L) + footer()
 
 
-# ───────────────────────────── 2. impact report ─────────────────────────────
-
-def releases_block(f: Facts, since: pd.Timestamp) -> list[str]:
-    rcfg = {r["key"]: r for r in indicators_cfg()["releases"]}
-    L = []
-    for r in f.releases:
-        if pd.Timestamp(r["release_utc"]) < since:
-            continue
-        cfg = rcfg.get(r["indicator"], {})
-        hot = "بالاتر از انتظار 🔼" if r["z"] > 0 else "پایین‌تر از انتظار 🔽"
-        L += [f"• <b>{esc(ind_name(r['indicator']))}</b> ({ltr(r['obs_date'])}): {num(r['actual'])} در برابر انتظار "
-              f"{num(r['expected'])} — {hot}، شدت {num(r['z'], '{:.1f}', sign=True)}σ",
-              f"   کانال: {chain(cfg.get('channels', []))}"]
-        for a in ("BTC", "Gold"):
-            k = (f.coef(r["indicator"], a, "24h") or {}).get("coefficient")
-            eff = None if k is None else k * np.sign(r["z"])
-            L.append(f"   {ASSET_FA[a]}: {direction_fa(eff)}" + (f" (ضریب ۲۴ساعته {num(k, '{:.1f}', sign=True)})" if k is not None else ""))
-    return L
-
-
-def scores_block(f: Facts) -> list[str]:
-    L = ["<b>امتیاز کلان (−۱۰۰ تا +۱۰۰)</b>"]
-    for a in ("BTC", "Gold"):
-        m = f.macro.get(a, {})
-        L.append(f"• {ASSET_FA[a]}: " + " · ".join(f"{HORIZON_FA[b].split(' ')[0]} {score((m.get(b) or {}).get('score'))}"
-                                                  for b in ("short", "medium", "long")))
-        top = (m.get("medium") or {}).get("top", [])[:3]
-        if top:
-            L.append("   مهم‌ترین عوامل ۴ هفته: " + "، ".join(
-                f"{esc(ind_name(t['indicator']))} {num(t['contribution'], '{:.1f}', sign=True)}" for t in top))
-    return L
-
-
-def context_block(f: Facts) -> list[str]:
-    s = f.state
-    L = []
-    reg = s.get("regime") or {}
-    if reg:
-        p = reg.get("probabilities", {}).get(reg.get("regime"), 0)
-        L.append(f"🧭 فاز اقتصادی: <b>{esc(word(reg.get('regime')))}</b> (احتمال {ltr(f'{p * 100:.0f}٪')})")
-    st = (s.get("fed_stance") or {}).get("score")
-    if st is not None:
-        L.append(f"🏦 موضع فدرال: {score(st)} (−۱۰۰ انبساطی … +۱۰۰ انقباضی)")
-    fw = s.get("fedwatch_next") or {}
-    if fw.get("meeting"):
-        pct = {k: ltr(f"{(fw.get(k) or 0) * 100:.0f}٪") for k in ("p_cut", "p_hold", "p_hike")}
-        L.append(f"📈 جلسه بعدی FOMC {ltr(fw['meeting'])}: کاهش {pct['p_cut']} · ثابت {pct['p_hold']} · افزایش {pct['p_hike']}")
-    return L
-
-
-def impact_report(f: Facts, now: pd.Timestamp, explanation: str | None = None, trigger: str | None = None) -> str:
-    L = [f"🧾 <b>گزارش اثر کلان بر بیت‌کوین و طلا</b> — {tehran(now)}"]
-    if trigger:
-        L.append(f"علت گزارش: {esc(trigger)}")
-    rel = releases_block(f, now - pd.Timedelta(hours=24))
-    if rel:
-        L += ["", "<b>چه تغییر کرد</b>", *rel]
-    news = f.important_news(now - pd.Timedelta(hours=24))
-    if not news.empty:
-        L += ["", "<b>خبرهای مهم ۲۴ ساعت اخیر</b>"]
-        L += [f"• {esc(r.title_fa)} ({'★' * int(r.importance)})" for r in news.head(5).itertuples()]
-    if explanation:
-        L += ["", "<b>زنجیره علّی</b>", esc(explanation)]
-    L += ["", *scores_block(f), "", *context_block(f)]
-    return "\n".join(L) + footer()
-
-
-# ───────────────────────────── 3. signals ─────────────────────────────
+# ───────────────────────────── signal card (used by the per-asset reports) ─────────────────────────────
 
 def signal_card(s: dict, asset: str, blocked: bool) -> list[str]:
     fmt = (lambda v: ltr(f"{v:,.0f}")) if asset == "BTC" else (lambda v: ltr(f"{v:,.2f}"))  # noqa: E731
@@ -214,68 +148,7 @@ def signal_card(s: dict, asset: str, blocked: bool) -> list[str]:
     return L
 
 
-def signals_message(f: Facts, names: dict[str, str] | None = None) -> str:
-    L = ["📊 <b>سیگنال‌های عددی</b>"]
-    for a in ("BTC", "Gold"):
-        x = f.asset(a)
-        if not x:
-            continue
-        fmt = "{:,.0f}" if a == "BTC" else "{:,.2f}"
-        er = x.get("expected_range") or {}
-        L += ["", f"<b>{ASSET_FA[a]}</b>" + (f" ({esc(proxy_fa(x['proxy']))})" if x.get("proxy") else "") + f" — قیمت {num(x.get('price'), fmt)}",
-              f"امتیاز کلان ۴ هفته: {score((x.get('macro') or {}).get('medium'))}"]
-        if er.get("1d"):
-            L.append(f"دامنه محتمل: یک روز {num(min(er['1d']), fmt)} تا {num(max(er['1d']), fmt)} · چهار هفته (±۱σ) "
-                     f"{num(min(er['4w_1sigma']), fmt)} تا {num(max(er['4w_1sigma']), fmt)}")
-        for s in x.get("signals", []):
-            L += ["", *signal_card(s, a, blocked=False)]
-        for s in x.get("watchlist", []):
-            L += ["", *signal_card(s, a, blocked=True)]
-        if not x.get("signals") and not x.get("watchlist"):
-            L.append("ستاپ فعالی وجود ندارد.")
-        bt = (x.get("backtest") or {}).get("summary", {})
-        if bt:
-            L.append("بک‌تست خارج از نمونه: " + " · ".join(
-                f"{word(sd)} {ltr(bt[sd].get('n_trades', 0))} معامله، میانگین R {num(bt[sd].get('avg_r'), '{:.2f}', sign=True)}"
-                for sd in ("long", "short") if sd in bt))
-        if x.get("risks"):
-            L.append("⚠️ ریسک‌ها: " + "؛ ".join(esc(fa(r, names)) for r in x["risks"]))
-    return "\n".join(L) + footer()
-
-
-# ───────────────────────────── 4. weekly summary ─────────────────────────────
-
-def weekly_summary(f: Facts, now: pd.Timestamp) -> str:
-    L = [f"🗓 <b>خلاصه هفتگی</b> — {tehran(now)}", "", *scores_block(f), "", *context_block(f)]
-    rel = releases_block(f, now - pd.Timedelta(days=7))
-    if rel:
-        L += ["", "<b>انتشارهای این هفته</b>", *rel]
-    if not f.coefs.empty:
-        c = f.coefs[(f.coefs["bucket"] == "medium") & (f.coefs["horizon"] == "4w") & (f.coefs["sample"] == "full")]
-        L += ["", "<b>قوی‌ترین ضرایب اثر ۴ هفته (محاسبه مجدد این هفته)</b>"]
-        for a in ("BTC", "Gold"):
-            top = c[c["asset"] == a].sort_values("coefficient", key=abs, ascending=False).head(4)
-            L.append(f"• {ASSET_FA[a]}: " + "، ".join(f"{esc(ind_name(r.indicator))} {num(r.coefficient, '{:.1f}', sign=True)}"
-                                                    for r in top.itertuples()))
-    for a in ("BTC", "Gold"):
-        bt = (f.asset(a).get("backtest") or {}).get("summary", {}).get("all")
-        if bt and bt.get("n_trades"):
-            wr = ltr(f"{(bt.get('win_rate') or 0) * 100:.0f}٪")
-            L.append(f"بک‌تست {ASSET_FA[a]}: {ltr(bt['n_trades'])} معامله، نرخ برد {wr}، "
-                     f"میانگین R {num(bt.get('avg_r'), '{:.2f}', sign=True)}")
-        elif bt is not None:
-            L.append(f"بک‌تست {ASSET_FA[a]}: بدون معامله در دوره آزمون")
-    nxt = f.calendar[(f.calendar["scheduled_utc"] > now) & (f.calendar["scheduled_utc"] <= now + pd.Timedelta(days=7))] \
-        if not f.calendar.empty else pd.DataFrame()
-    if not nxt.empty:
-        rel_c = releases_cfg()
-        L += ["", "<b>تقویم هفته آینده</b>"]
-        L += [f"• {tehran(e.scheduled_utc)} — {esc(rel_c.get(e.release_id, {}).get('name_fa', e.release_id))}"
-              for e in nxt.drop_duplicates("event_id").sort_values("scheduled_utc").itertuples()]
-    return "\n".join(L) + footer()
-
-
-# ───────────────────────────── 5. health warning / 6. news alert ─────────────────────────────
+# ───────────────────────────── health warning / news alert ─────────────────────────────
 
 def health_warning(problems: list[dict], context: str) -> str:
     L = [f"🚨 <b>هشدار سلامت داده</b> — {esc(context)}",
@@ -302,7 +175,7 @@ def news_alert(item: dict) -> str:
     return "\n".join(L) + footer()
 
 
-# ───────────────────────────── 7. pre-positioning (front-run) alert ─────────────────────────────
+# ───────────────────────────── pre-positioning (front-run) alert ─────────────────────────────
 
 FEATURE_FA = {"drift": "رانش قیمت نسبت به نوسان عادی همان ساعت‌ها", "steady": "یک‌طرفه و کم‌نوسان بودن حرکت (آماره t)",
               "flow": "عدم‌توازن سفارش‌های تهاجمی (taker)", "rate": "تغییر بازده ۲ ساله (انتظار مسیر نرخ)",

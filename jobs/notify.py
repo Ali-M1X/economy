@@ -1,7 +1,7 @@
 """Compose and send the Persian Telegram messages.
 
-    python -m jobs.notify report  --root output [--trigger "CPI release"]   # impact report + numeric signals
-    python -m jobs.notify weekly  --root output                            # weekly summary
+    python -m jobs.notify report  --root output [--trigger "CPI release"]   # overview + BTC + gold + tables + glossary
+    python -m jobs.notify weekly  --root output                            # the same, as the weekly summary
     python -m jobs.notify headsup --root output                            # releases scheduled for tomorrow (Tehran)
     python -m jobs.notify news    --root output                            # alerts for new importance ≥ 4 news
     python -m jobs.notify health  --root output                            # warning only, if the data is unhealthy
@@ -24,7 +24,7 @@ import pandas as pd
 from jobs import health as health_mod
 from notify import telegram
 from reports import facts as facts_mod
-from reports import messages, writer
+from reports import asset_report, messages, writer
 
 MAX_NEWS_ALERTS = 3
 NEWS_WINDOW = pd.Timedelta(hours=6)
@@ -88,13 +88,13 @@ def run(mode: str, root: Path, state: Path | None, now: pd.Timestamp, trigger: s
         context = "گزارش هفتگی" if mode == "weekly" else "گزارش اثر"
         if not gate(root, state, now, context, dry_run):
             return 0
-        if mode == "weekly":
-            _send(messages.weekly_summary(f, now), "weekly", dry_run, root)
-            return 0
-        text, source = writer.explain(f)
-        print(f"causal explanation: {source}")
-        _send(messages.impact_report(f, now, text, trigger), "impact", dry_run, root)
-        _send(messages.signals_message(f, names), "signals", dry_run, root)
+        # one overview (shared context), one self-contained report per asset, the full indicator tables, a glossary
+        chains = {}
+        for a in ("BTC", "Gold"):
+            chains[a], source = writer.explain_asset(f, a, asset_report.chain_sentences(f, a, now))
+            print(f"causal chain {a}: {source}")
+        for kind, text in asset_report.report_messages(f, now, chains, trigger, names, weekly=mode == "weekly"):
+            _send(text, kind, dry_run, root)
         return 0
     if mode == "headsup":
         tomorrow = str((now.tz_convert("Asia/Tehran") + pd.Timedelta(days=1)).date())

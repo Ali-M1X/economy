@@ -64,7 +64,11 @@ def build(out: Path, seed: int = 3, now: pd.Timestamp | None = None) -> Path:
     pd.DataFrame([{"id": f"n{i}", "source": "fed_all", "published_utc": now - pd.Timedelta(hours=3 * i),
                    "title": f"Demo headline {i}", "url": "https://www.federalreserve.gov/"} for i in range(8)]).to_csv(cache / "news.csv", index=False)
     (out / "data_availability.json").write_text(json.dumps({"generated_at": now.isoformat(), "series": avail, "probes": []}))
-    (out / "macro_scores.json").write_text(json.dumps({a: {b: {"score": None if s is None else float(s), "top": [], "note": None}
+    top = [{"indicator": "real_yield_10y", "coef": -4.0, "state": -0.6, "contribution": 8.0},
+           {"indicator": "dxy", "coef": -3.0, "state": 0.5, "contribution": -5.0}]
+    state = {"real_yield_10y": -0.6, "dxy": 0.5, "core_cpi": 0.3, "m2": 0.2, "net_liquidity_weekly": -0.1}
+    (out / "macro_scores.json").write_text(json.dumps({a: {b: {"score": None if s is None else float(s), "note": None,
+                                                               "top": top if b == "medium" else [], "state": state}
                                                            for b, s in zip(("short", "medium", "long"), (None, sc, -sc / 2))}
                                                        for a, sc in (("BTC", 18.0), ("Gold", -6.0))}))
     px = {"BTC": 80000.0, "Gold": 4100.0}
@@ -84,7 +88,7 @@ def build(out: Path, seed: int = 3, now: pd.Timestamp | None = None) -> Path:
                        "context": {"volume_profile_30d": {"poc": p * 0.99, "vah": p * 1.01, "val": p * 0.97}, "orderbook_walls": []},
                        "expected_range": {"1d": [p * 0.98, p * 1.02], "4w_1sigma": [p * 0.9, p * 1.1], "4w_sigma_pct": 9.0,
                                           "macro_drift_pct": 0.3},
-                       "macro": {"short": None, "medium": 18.0, "long": -9.0},
+                       "macro": {"short": None, "medium": 18.0 if a == "BTC" else -6.0, "long": -9.0 if a == "BTC" else 3.0},
                        "backtest": {"period": ["2020-01-01", f"{end:%Y-%m-%d}"], "costs": {"fee_bps": 5, "slippage_bps": 2},
                                     "summary": {s: {"n_trades": 100, "win_rate": 0.4, "avg_r": 0.0, "max_drawdown_r": 10.0}
                                                 for s in ("all", "long", "short")},
@@ -109,6 +113,11 @@ def build(out: Path, seed: int = 3, now: pd.Timestamp | None = None) -> Path:
     (out / "recent_releases.json").write_text(json.dumps([{
         "indicator": "cpi", "release_utc": (now - pd.Timedelta(hours=3)).isoformat(), "obs_date": f"{end - pd.DateOffset(months=1):%Y-%m-01}",
         "actual": 0.42, "expected": 0.25, "surprise": 0.17, "z": 1.8, "basis": "vs mean3 (no free consensus)"}]))
+    (out / "latest_surprises.json").write_text(json.dumps({
+        "cpi": {"release_utc": (now - pd.Timedelta(hours=3)).isoformat(), "obs_date": f"{end - pd.DateOffset(months=1):%Y-%m-01}",
+                "actual": 0.42, "expected": 0.25, "z": 1.8, "basis": "vs mean3 (no free consensus)"},
+        "nonfarm_payrolls": {"release_utc": (now - pd.Timedelta(days=20)).isoformat(), "obs_date": f"{end - pd.DateOffset(months=2):%Y-%m-01}",
+                             "actual": 142.0, "expected": 160.0, "z": -0.4, "basis": "vs mean3 (no free consensus)"}}))
     sel = {"n_events": 80, "n_signals": 41, "n_trades": 41, "win_rate": 0.44, "avg_r": -0.06, "p_r": 0.66}
     cpi_T = now + pd.Timedelta(days=3)
     comps = {"drift": 0.9, "steady": 0.7, "flow": 0.4}

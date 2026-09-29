@@ -58,6 +58,7 @@ class Facts:
     news: pd.DataFrame = field(default_factory=pd.DataFrame)  # Claude-classified news
     availability: dict = field(default_factory=dict)
     prepos: dict = field(default_factory=dict)             # prepos.json (pre-positioning backtest + live)
+    surprises: dict = field(default_factory=dict)          # latest_surprises.json (last first-print surprise per release)
 
     # ── lookups ──
     def asset(self, a: str) -> dict:
@@ -86,6 +87,17 @@ class Facts:
             p = self.root / "cache" / "observations.csv.gz"
             self._obs_cache = pd.read_csv(p, parse_dates=["date"]) if p.exists() else pd.DataFrame(columns=["series_key", "date", "value"])
         return self._obs_cache
+
+    def gold_futures(self) -> tuple[float, str] | None:
+        """Latest COMEX gold futures (GC=F) price and its time: hourly bars if present, else the daily close."""
+        p = self.root / "cache" / "candles_GCF_1h.csv.gz"
+        if p.exists():
+            g = pd.read_csv(p)
+            if not g.empty:
+                g["ts"] = pd.to_datetime(g["ts"], utc=True, format="ISO8601")
+                r = g.sort_values("ts").iloc[-1]
+                return float(r["close"]), r["ts"].isoformat()
+        return self.latest("gold_futures")
 
     def important_news(self, since: pd.Timestamp, min_importance: int = 4) -> pd.DataFrame:
         n = self.news
@@ -127,7 +139,7 @@ def load(root: Path) -> Facts:
     avail = rj("data_availability.json")
     f = Facts(root=root, as_of=avail.get("generated_at") or rj("features_state.json").get("as_of"),
               state=rj("features_state.json"), macro=rj("macro_scores.json"), signals=rj("signals.json"),
-              releases=rj("recent_releases.json") or [], prepos=rj("prepos.json"),
+              releases=rj("recent_releases.json") or [], prepos=rj("prepos.json"), surprises=rj("latest_surprises.json"),
               availability={r["key"]: r for r in avail.get("series", [])})
     if (root / "impact_coefficients.csv").exists():
         f.coefs = pd.read_csv(root / "impact_coefficients.csv")

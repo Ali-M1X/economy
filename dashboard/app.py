@@ -535,13 +535,15 @@ with tabs["رژیم‌ها"]:
                    "فازهای این مدل با تاریخ‌گذاری رسمی رکود یکی نیستند.")
 
 with tabs["گزارش‌ها"]:
-    kinds = {"impact": "گزارش اثر", "signals": "سیگنال‌های عددی", "weekly": "خلاصه هفتگی", "headsup": "هشدار یک روز قبل",
+    kinds = {"overview": "نمای کلی بازار", "report_btc": "گزارش بیت‌کوین", "report_gold": "گزارش طلا",
+             "table_btc": "جدول شاخص‌ها — بیت‌کوین", "table_gold": "جدول شاخص‌ها — طلا", "glossary": "راهنمای اصطلاحات",
+             "impact": "گزارش اثر", "signals": "سیگنال‌های عددی", "weekly": "خلاصه هفتگی", "headsup": "هشدار یک روز قبل",
              "health": "هشدار سلامت داده"}
     if B.messages:
         st.markdown("**آخرین پیام‌های فارسی (همان متن ارسال‌شده به تلگرام)**")
         for kind, html_ in B.messages.items():
             stamp = html_.split("-->", 1)[0].replace("<!--", "").strip() if html_.startswith("<!--") else ""
-            with st.expander(f"{kinds.get(kind, kind)}" + (f" — {fmt_tehran(stamp)}" if stamp else ""), expanded=kind == "impact"):
+            with st.expander(f"{kinds.get(kind, kind)}" + (f" — {fmt_tehran(stamp)}" if stamp else ""), expanded=kind == "overview"):
                 body = html_.split("-->", 1)[1] if html_.startswith("<!--") else html_
                 body_html = body.strip().replace("\n", "<br>")
                 st.markdown(f'<div dir="rtl">{body_html}</div>', unsafe_allow_html=True)
