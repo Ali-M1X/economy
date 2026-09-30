@@ -29,7 +29,9 @@ from pathlib import Path
 import pandas as pd
 
 INTRADAY = "*/15 * * * *"
-HEADSUP = "40 14 * * *"          # 18:10 Tehran — evening before
+HEADSUP = "40 14 * * *"          # 18:10 Tehran — daily report + heads-up for tomorrow's releases
+# GitHub Actions often skips scheduled runs under load: later slots retry the daily run until it has been sent
+DAILY_RETRY = ["40 15 * * *", "40 16 * * *", "40 17 * * *"]
 WEEKLY = "20 3 * * 6"            # Saturday 06:50 Tehran, after Friday's data
 PREPOS = "50 * * * *"            # hourly: pre-positioning check while a target release is ≤ 72 h away
 PREPOS_RELEASES = ("cpi", "pce", "nfp", "fomc")
@@ -60,7 +62,7 @@ def mode_for(schedule: str | None) -> str | None:
         return None
     if schedule == INTRADAY:
         return "intraday"
-    if schedule == HEADSUP:
+    if schedule == HEADSUP or schedule in DAILY_RETRY:
         return "headsup"
     if schedule == WEEKLY:
         return "weekly"
@@ -74,6 +76,16 @@ def mode_for(schedule: str | None) -> str | None:
 def reported(state: Path | None) -> set[str]:
     p = state / "reported_events.json" if state else None
     return set(json.loads(p.read_text()).get("ids", [])) if p and p.exists() else set()
+
+
+def tehran_date(now: pd.Timestamp) -> str:
+    return str(now.tz_convert("Asia/Tehran").date())
+
+
+def daily_sent(state: Path | None, now: pd.Timestamp) -> bool:
+    """Whether today's (Tehran) daily report already went out."""
+    p = state / "daily_sent.json" if state else None
+    return bool(p and p.exists() and json.loads(p.read_text()).get("date") == tehran_date(now))
 
 
 def _utc(t) -> pd.Timestamp:
@@ -107,6 +119,8 @@ def plan(schedule: str | None, now: pd.Timestamp, state: Path | None, mode: str 
             return Plan("none", reason="no CPI/PCE/NFP/FOMC release in the next 72 h")
         return Plan("prepos", [{**e, "scheduled_utc": _utc(e["scheduled_utc"]).isoformat()} for e in soon],
                     reason="upcoming: " + ", ".join(e["event_id"] for e in soon))
+    if mode == "headsup" and schedule and daily_sent(state, now):
+        return Plan("none", reason="today's daily report was already sent")
     if mode != "release":
         return Plan(mode, reason=f"schedule {schedule!r}" if schedule else "manual")
     if calendar_fn is None:

@@ -26,7 +26,7 @@ _pipeline_lock = threading.Lock()
 
 
 def crons() -> list[str]:
-    return [scheduler.INTRADAY, scheduler.HEADSUP, scheduler.WEEKLY, scheduler.PREPOS, *scheduler.RELEASE]
+    return [scheduler.INTRADAY, scheduler.HEADSUP, *scheduler.DAILY_RETRY, scheduler.WEEKLY, scheduler.PREPOS, *scheduler.RELEASE]
 
 
 _DOW = ["sun", "mon", "tue", "wed", "thu", "fri", "sat", "sun"]

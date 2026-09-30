@@ -2,6 +2,7 @@
 
     python -m jobs.notify report  --root output [--trigger "CPI release"]   # overview + BTC + gold + tables + glossary
     python -m jobs.notify weekly  --root output                            # the same, as the weekly summary
+    python -m jobs.notify daily   --root output                            # the report, at most once per Tehran day
     python -m jobs.notify headsup --root output                            # releases scheduled for tomorrow (Tehran)
     python -m jobs.notify news    --root output                            # alerts for new importance ≥ 4 news
     python -m jobs.notify health  --root output                            # warning only, if the data is unhealthy
@@ -22,6 +23,7 @@ from pathlib import Path
 import pandas as pd
 
 from jobs import health as health_mod
+from jobs import scheduler
 from notify import telegram
 from reports import facts as facts_mod
 from reports import asset_report, messages, writer
@@ -77,6 +79,17 @@ def gate(root: Path, state: Path | None, now: pd.Timestamp, context: str, dry_ru
     return False
 
 
+def _send_report(f, now: pd.Timestamp, trigger: str | None, names: dict, dry_run: bool, root: Path,
+                 weekly: bool) -> None:
+    # one overview (shared context), one self-contained report per asset, the full indicator tables, a glossary
+    chains = {}
+    for a in ("BTC", "Gold"):
+        chains[a], source = writer.explain_asset(f, a, asset_report.chain_sentences(f, a, now))
+        print(f"causal chain {a}: {source}")
+    for kind, text in asset_report.report_messages(f, now, chains, trigger, names, weekly=weekly):
+        _send(text, kind, dry_run, root)
+
+
 def run(mode: str, root: Path, state: Path | None, now: pd.Timestamp, trigger: str | None, dry_run: bool) -> int:
     f = facts_mod.load(root)
     names = (dict(zip(f.calendar["name_en"], f.calendar["name_fa"]))
@@ -84,17 +97,21 @@ def run(mode: str, root: Path, state: Path | None, now: pd.Timestamp, trigger: s
     if mode == "health":
         gate(root, state, now, "بررسی دوره‌ای", dry_run)
         return 0
+    if mode == "daily":
+        today = scheduler.tehran_date(now)
+        if scheduler.daily_sent(state, now):
+            print(f"daily report for {today} already sent")
+            return 0
+        if not gate(root, state, now, "گزارش روزانه", dry_run):
+            return 0  # not marked as sent: a later retry slot tries again
+        _send_report(f, now, trigger or "گزارش روزانه", names, dry_run, root, weekly=False)
+        _save_state(state, "daily_sent.json", {"date": today})
+        return 0
     if mode in ("report", "weekly"):
         context = "گزارش هفتگی" if mode == "weekly" else "گزارش اثر"
         if not gate(root, state, now, context, dry_run):
             return 0
-        # one overview (shared context), one self-contained report per asset, the full indicator tables, a glossary
-        chains = {}
-        for a in ("BTC", "Gold"):
-            chains[a], source = writer.explain_asset(f, a, asset_report.chain_sentences(f, a, now))
-            print(f"causal chain {a}: {source}")
-        for kind, text in asset_report.report_messages(f, now, chains, trigger, names, weekly=mode == "weekly"):
-            _send(text, kind, dry_run, root)
+        _send_report(f, now, trigger, names, dry_run, root, weekly=mode == "weekly")
         return 0
     if mode == "headsup":
         tomorrow = str((now.tz_convert("Asia/Tehran") + pd.Timedelta(days=1)).date())
@@ -146,7 +163,7 @@ def run(mode: str, root: Path, state: Path | None, now: pd.Timestamp, trigger: s
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["report", "weekly", "headsup", "news", "health", "prepos"])
+    ap.add_argument("mode", choices=["report", "daily", "weekly", "headsup", "news", "health", "prepos"])
     ap.add_argument("--root", default="output")
     ap.add_argument("--state")
     ap.add_argument("--trigger", help="why this report runs (shown in the message)")

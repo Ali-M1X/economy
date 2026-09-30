@@ -124,7 +124,7 @@ If any check fails, a health warning is sent instead of the report. The same war
 | cron (UTC) | mode | what happens |
 |---|---|---|
 | every 15 min | intraday | news scan → Claude classification → alerts for importance ≥ 4; importance 5 triggers a full report |
-| daily 14:40 (18:10 Tehran) | headsup | full pipeline refresh → heads-up for tomorrow's releases (Tehran date) + health check |
+| daily 14:40 (18:10 Tehran), retries 15:40 / 16:40 / 17:40 | headsup | full pipeline refresh → daily report (once per Tehran day; the retry slots run only if it has not gone out, since GitHub skips scheduled runs under load) + heads-up for tomorrow's releases (Tehran date) + health check |
 | 5 min after each release time, for both US DST offsets | release | only if a tracked release happened in the last 100 min and was not reported: wait until FRED shows the new value (≤ 2 h) → full pipeline → impact report + signals |
 | Saturday 03:20 (06:50 Tehran) | weekly | full pipeline (coefficients and backtests recomputed) → weekly summary |
 | hourly at :50 | prepos | only while CPI/PCE/NFP/FOMC is ≤ 72 h away: live pre-positioning check (model from the last full run) → alert if that release/asset has a proven out-of-sample edge |

@@ -28,7 +28,8 @@ def test_pipeline_steps_per_mode(tmp_path, monkeypatch):
     assert "classify" in names(rel) and "telegram" in names(rel)
     tg = dict((n, a) for n, a, _ in rel)["telegram"]
     assert tg[tg.index("--trigger") + 1] == "انتشار CPI"
-    assert "health warning" in names(pipeline.steps("headsup", "", "", tmp_path, tmp_path / "state"))
+    hs = names(pipeline.steps("headsup", "", "به‌روزرسانی روزانه", tmp_path, tmp_path / "state"))
+    assert hs[-3:] == ["daily report", "telegram", "health warning"]
     collect = dict((n, a) for n, a, _ in none)["collect + validate"]
     assert "--store" not in collect  # storage stays off unless explicitly enabled
     monkeypatch.setenv("DATABASE_URL", "postgresql://x")
@@ -60,7 +61,8 @@ def test_pipeline_swaps_current_atomically_and_prunes(tmp_path, monkeypatch):
 
 
 def test_runner_crons_match_github_and_use_cron_weekdays():
-    assert runner.crons() == [scheduler.INTRADAY, scheduler.HEADSUP, scheduler.WEEKLY, scheduler.PREPOS, *scheduler.RELEASE]
+    assert runner.crons() == [scheduler.INTRADAY, scheduler.HEADSUP, *scheduler.DAILY_RETRY, scheduler.WEEKLY,
+                              scheduler.PREPOS, *scheduler.RELEASE]
     assert set(runner.crons()) == set(workflow_crons())
     t0 = dt.datetime(2026, 9, 29, 12, 0, tzinfo=dt.timezone.utc)  # a Tuesday
     assert runner.trigger(scheduler.WEEKLY).get_next_fire_time(None, t0).strftime("%a %H:%M") == "Sat 03:20"
@@ -104,6 +106,6 @@ def test_compose_services_and_env_example():
     assert "ENABLE_DB_STORAGE=false" in env
 
 
-@pytest.mark.parametrize("cron", [scheduler.INTRADAY, scheduler.HEADSUP, scheduler.WEEKLY, scheduler.PREPOS, *scheduler.RELEASE])
+@pytest.mark.parametrize("cron", [scheduler.INTRADAY, scheduler.HEADSUP, *scheduler.DAILY_RETRY, scheduler.WEEKLY, scheduler.PREPOS, *scheduler.RELEASE])
 def test_every_cron_maps_to_a_mode(cron):
     assert scheduler.mode_for(cron) in {"intraday", "headsup", "weekly", "prepos", "release"}

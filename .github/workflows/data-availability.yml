@@ -57,6 +57,7 @@ jobs:
           path: |
             state/health_last.json
             state/headsup_sent.json
+            state/daily_sent.json
             state/reported_events.json
             state/fed_docs_scored.csv
           key: mp-state-pipe-${{ github.run_id }}
@@ -106,7 +107,8 @@ jobs:
           case "$MODE" in
             release|report) python -m jobs.notify report --root output --state state --trigger "$TRIGGER" ;;
             weekly)         python -m jobs.notify weekly --root output --state state ;;
-            headsup)        python -m jobs.notify headsup --root output --state state
+            headsup)        python -m jobs.notify daily --root output --state state --trigger "$TRIGGER"
+                            python -m jobs.notify headsup --root output --state state
                             python -m jobs.notify health --root output --state state ;;
           esac
           if [ "$MODE" = release ] && [ -n "$EVENTS" ]; then python -m jobs.scheduler mark --events "$EVENTS" --state state; fi
@@ -123,6 +125,7 @@ jobs:
           path: |
             state/health_last.json
             state/headsup_sent.json
+            state/daily_sent.json
             state/reported_events.json
             state/fed_docs_scored.csv
           key: mp-state-pipe-${{ github.run_id }}-${{ github.run_attempt }}

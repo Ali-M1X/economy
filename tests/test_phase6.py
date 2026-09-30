@@ -373,6 +373,25 @@ def test_notify_report_weekly_headsup_dry_run(root, tmp_path):
     assert "خلاصه‌ی هفتگی" in (root / "messages" / "overview.html").read_text(encoding="utf-8")
 
 
+def test_daily_report_once_per_tehran_day_with_retry_slots(root, tmp_path):
+    state = tmp_path / "state"
+    report = ["glossary", "overview", "report_btc", "report_gold", "table_btc", "table_gold"]
+    assert all(scheduler.mode_for(c) == "headsup" for c in [scheduler.HEADSUP, *scheduler.DAILY_RETRY])
+    assert scheduler.plan(scheduler.HEADSUP, NOW, state).mode == "headsup"
+    assert notify.run("daily", root, state, NOW, "به‌روزرسانی روزانه", dry_run=True) == 0
+    sent = sorted(p.name.split("-", 2)[-1].removesuffix(".html") for p in telegram.OUTBOX.iterdir())
+    assert sent == sorted(report)
+    assert "به‌روزرسانی روزانه" in (root / "messages" / "overview.html").read_text(encoding="utf-8")
+    # the same Tehran day: a retry slot plans nothing, a manual run still refreshes but does not re-send
+    later = NOW + pd.Timedelta(hours=2)
+    assert scheduler.plan(scheduler.DAILY_RETRY[0], later, state).mode == "none"
+    assert scheduler.plan(None, later, state, "headsup").mode == "headsup"
+    notify.run("daily", root, state, later, None, dry_run=True)
+    assert len(list(telegram.OUTBOX.iterdir())) == len(report)
+    # the next day it goes out again
+    assert scheduler.plan(scheduler.HEADSUP, NOW + pd.Timedelta(days=1), state).mode == "headsup"
+
+
 def test_notify_sends_health_warning_instead_of_report(root, tmp_path):
     (root / "macro_scores.json").unlink()
     assert notify.run("report", root, tmp_path / "state", NOW, None, dry_run=True) == 0
@@ -405,7 +424,8 @@ def workflow_crons() -> list[str]:
 
 def test_workflow_crons_match_the_scheduler():
     crons = workflow_crons()
-    assert set(crons) == {scheduler.INTRADAY, scheduler.HEADSUP, scheduler.WEEKLY, scheduler.PREPOS, *scheduler.RELEASE}
+    assert set(crons) == {scheduler.INTRADAY, scheduler.HEADSUP, *scheduler.DAILY_RETRY, scheduler.WEEKLY,
+                          scheduler.PREPOS, *scheduler.RELEASE}
     assert {scheduler.mode_for(c) for c in crons} == {"intraday", "headsup", "weekly", "prepos", "release"}
 
 

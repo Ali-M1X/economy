@@ -46,6 +46,8 @@ def steps(mode: str, events: str, trigger: str, out: Path, state: Path) -> list[
     if notify:
         s.append(("telegram", py + ["jobs.notify", *notify, "--root", str(out), "--state", str(state)], False))
     if mode == "headsup":
+        s.insert(len(s) - 1, ("daily report", py + ["jobs.notify", "daily", "--trigger", trigger, "--root", str(out),
+                                                     "--state", str(state)], False))
         s.append(("health warning", py + ["jobs.notify", "health", "--root", str(out), "--state", str(state)], False))
     if mode == "release" and events:
         s.append(("mark reported", py + ["jobs.scheduler", "mark", "--events", events, "--state", str(state)], False))

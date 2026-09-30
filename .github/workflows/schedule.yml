@@ -2,7 +2,9 @@ name: schedule
 # All scheduled work. `jobs.scheduler plan` maps the cron that fired to a mode (the cron strings below must match
 # jobs/scheduler.py — a test checks this):
 #   */15 min         intraday  news scan → Claude classification → alerts (importance ≥ 4); importance 5 → full report
-#   daily 14:40 UTC  headsup   full refresh + heads-up for releases scheduled tomorrow (Tehran) + health check
+#   daily 14:40 UTC  headsup   full refresh + daily report + heads-up for releases scheduled tomorrow (Tehran) +
+#                              health check; 15:40/16:40/17:40 retry only if today's report has not gone out
+#                              (GitHub skips scheduled runs under load)
 #   release crons    release   only if a tracked release happened in the last 100 min and was not reported yet:
 #                              wait for the new value (≤ 2 h) → full pipeline → impact report + signals
 #   Sat 03:20 UTC    weekly    full refresh, coefficients and backtests recomputed → weekly summary
@@ -16,6 +18,9 @@ on:
   schedule:
     - cron: "*/15 * * * *"
     - cron: "40 14 * * *"
+    - cron: "40 15 * * *"
+    - cron: "40 16 * * *"
+    - cron: "40 17 * * *"
     - cron: "20 3 * * 6"
     - cron: "50 * * * *"
     - cron: "35 12,13 * * 1-5"
@@ -51,6 +56,7 @@ jobs:
           path: |
             state/health_last.json
             state/headsup_sent.json
+            state/daily_sent.json
             state/reported_events.json
             state/fed_docs_scored.csv
           key: mp-state-pipe-${{ github.run_id }}
@@ -67,6 +73,7 @@ jobs:
           path: |
             state/health_last.json
             state/headsup_sent.json
+            state/daily_sent.json
             state/reported_events.json
             state/fed_docs_scored.csv
           key: mp-state-pipe-${{ github.run_id }}-plan
