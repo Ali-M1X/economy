@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from core.fa import fa, label, ltr, word
+from core.jalali import jdate, jdatetime_fa
 from core.timeutil import TEHRAN
 from notify.telegram import esc
 from reports.facts import MEASURE_FA, Facts, channel_fa, indicators_cfg, ind_name, releases_cfg
@@ -19,7 +20,6 @@ from reports.facts import MEASURE_FA, Facts, channel_fa, indicators_cfg, ind_nam
 DISCLAIMER = "⚠️ این پیام صرفاً تحلیلی و آموزشی است و توصیه مالی یا پیشنهاد خرید و فروش نیست."
 ASSET_FA = {"BTC": "بیت‌کوین", "Gold": "طلا"}
 HORIZON_FA = {"short": "کوتاه‌مدت (۲۴ ساعت)", "medium": "میان‌مدت (۴ هفته)", "long": "بلندمدت (۶ ماه)"}
-WEEKDAY_FA = ["دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه", "جمعه", "شنبه", "یکشنبه"]
 
 
 # ───────────────────────────── helpers ─────────────────────────────
@@ -35,9 +35,8 @@ def score(v) -> str:
 
 
 def tehran(ts) -> str:
-    t = pd.Timestamp(ts)
-    t = (t.tz_localize("UTC") if t.tzinfo is None else t).tz_convert(TEHRAN)
-    return f"{WEEKDAY_FA[t.weekday()]} {ltr(f'{t:%Y-%m-%d %H:%M}')}"
+    """Every date-time in every message: Persian calendar, Tehran time ('جمعه ۱۰ مهر ۱۴۰۵، ساعت ۰۱:۰۲')."""
+    return jdatetime_fa(ts)
 
 
 def direction_fa(v: float | None) -> str:
@@ -78,7 +77,7 @@ def prev_measure(f: Facts, key: str, measure: str) -> tuple[float, str] | None:
         v = s.iloc[-1] - s.iloc[-2]
     else:
         v = s.iloc[-1]
-    return float(v), f"{s.index[-1]:%Y-%m-%d}"
+    return float(v), s.index[-1]
 
 
 # ───────────────────────────── 1. heads-up (one day before) ─────────────────────────────
@@ -99,18 +98,18 @@ def headsup(f: Facts, now: pd.Timestamp) -> str | None:
     rel = releases_cfg()
     rcfg = {r["key"]: r for r in indicators_cfg()["releases"]}
     pre = f.prepos.get("live", []) if getattr(f, "prepos", None) else []
-    L = [f"📅 <b>هشدار یک روز قبل — انتشارهای فردا ({ltr(str(tomorrow))})</b>"]
+    L = [f"📅 <b>هشدار یک روز قبل — انتشارهای فردا ({jdate(str(tomorrow))})</b>"]
     for e in ev.itertuples():
         r = rel.get(e.release_id, {})
         L += ["", f"<b>{esc(r.get('name_fa', e.release_id))}</b> {'★' * int(r.get('importance', 1))}",
-              f"⏰ زمان: {tehran(e.scheduled_utc)} (تهران)",
+              f"⏰ زمان: {tehran(e.scheduled_utc)} (به وقت تهران)",
               "📊 پیش‌بینی (اجماع): منبع رایگان ندارد — به‌جای آن «انتظار» سیستم = میانگین ۳ دوره قبل"]
         for key in r.get("series_keys", [])[:2]:
             cfg = rcfg.get(key)
             measure = cfg["measure"] if cfg else "level"
             pv = prev_measure(f, key, measure)
             if pv:
-                L.append(f"↩️ قبلی {esc(ind_name(key))}: {num(pv[0])} ({esc(MEASURE_FA.get(measure, measure))}، {ltr(pv[1])})")
+                L.append(f"↩️ قبلی {esc(ind_name(key))}: {num(pv[0])} ({esc(MEASURE_FA.get(measure, measure))})")
             if not cfg:
                 continue
             L.append(f"🔗 کانال اثر: {chain(cfg.get('channels', []))}")

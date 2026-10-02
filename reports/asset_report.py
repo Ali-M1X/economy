@@ -1,10 +1,10 @@
-"""Per-asset Persian Telegram reports: market overview, one self-contained message per asset (BTC, gold), the full
-indicator-impact table and a glossary.
+"""Per-asset Persian Telegram reports: market overview, one message per asset (BTC, gold), the full indicator tables
+and a short glossary — only what changes a decision, readable on a phone.
 
-Every number comes from `reports.facts.Facts` (the job outputs) or from simple arithmetic on the snapshot's own series
-(latest value, change vs the previous print); nothing is estimated here. Scores always carry their scale and a
-plain-Persian reading. Tables are ASCII inside <pre> blocks so the columns stay aligned in Telegram; the Persian
-indicator name sits on its own line above each data line.
+Every number comes from `reports.facts.Facts` (the job outputs) or from simple arithmetic on the snapshot's own series;
+nothing is estimated here. Dates are Persian (Jalali) in Tehran time (core.jalali). Tables are <pre> blocks at most
+32 characters wide: ASCII labels and numbers first, so they align; Persian words and dates last, each in a
+right-to-left isolate so it reads correctly inside the left-to-right table line.
 """
 
 from __future__ import annotations
@@ -15,11 +15,12 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from core.fa import fa, ltr, word
+from core.fa import word
+from core.jalali import jdate, jdate_short
 from core.registry import load_registry
 from notify.telegram import esc
 from reports.facts import Facts, channel_fa, ind_name, indicators_cfg, releases_cfg
-from reports.messages import ASSET_FA, DISCLAIMER, PREPOS_STATUS_FA, dashboard_link, num, signal_card, tehran
+from reports.messages import ASSET_FA, DISCLAIMER, dashboard_link, num, signal_card, tehran
 
 SCORE_GATE = 15  # |medium Macro Score| a trade signal needs (jobs.signals.MACRO_THRESHOLD)
 EDGE_TRADES = 30  # jobs.signals.MIN_EDGE_TRADES
@@ -27,13 +28,26 @@ TOP_ROWS = 6
 CHUNK_ROWS = 14
 HORIZONS = (("short", "۲۴ ساعت"), ("medium", "۴ هفته"), ("long", "۶ ماه"))
 CONF_FA = {"high": "زیاد", "medium": "متوسط", "low": "کم"}
-CONF_CODE = {"high": "H", "medium": "M", "low": "L"}
 ICON = {"BTC": "₿", "Gold": "🥇"}
-TICKER = {"philly_fed_activity": "PHILLY", "avg_hourly_earnings": "AHE", "net_liquidity_weekly": "NETLIQ",
-          "dxy": "DXY", "fed_funds_eff_daily": "DFF"}
+# short ASCII labels (≤ 5 characters) for the phone-width tables; the Persian name is in the key under each table
+SHORT = {"cpi": "CPI", "core_cpi": "CCPI", "ppi_final_demand": "PPI", "pce": "PCE", "core_pce": "CPCE",
+         "nonfarm_payrolls": "NFP", "unemployment_rate": "UNEMP", "avg_hourly_earnings": "AHE", "jolts_openings": "JOLTS",
+         "initial_claims": "CLAIM", "ust_2y": "US2Y", "ust_10y": "US10Y", "real_yield_10y": "RY10", "breakeven_10y": "BE10",
+         "spread_10y_2y": "10-2Y", "fed_funds_eff_daily": "FFR", "dxy": "DXY", "baa_10y_spread": "BAA", "nfci": "NFCI",
+         "vix": "VIX", "move_index": "MOVE", "spx": "SPX", "copper_futures": "COPR", "wti_futures": "WTI",
+         "fed_balance_sheet": "FEDBS", "net_liquidity_weekly": "NLIQ", "m2": "M2", "philly_fed_activity": "PHIL"}
+# what a higher / lower print means, in plain words (template text, no numbers)
+MEANING_FA = {"cpi": ("تورم داغ‌تر", "تورم آرام‌تر"), "core_cpi": ("تورم پایه‌ی داغ‌تر", "تورم پایه‌ی آرام‌تر"),
+              "ppi_final_demand": ("فشار قیمت تولیدکننده بیشتر", "فشار قیمت تولیدکننده کمتر"),
+              "pce": ("تورم PCE داغ‌تر", "تورم PCE آرام‌تر"), "core_pce": ("تورم پایه‌ی PCE داغ‌تر", "تورم پایه‌ی PCE آرام‌تر"),
+              "nonfarm_payrolls": ("بازار کار قوی‌تر", "بازار کار ضعیف‌تر"),
+              "unemployment_rate": ("بازار کار ضعیف‌تر", "بازار کار قوی‌تر"),
+              "avg_hourly_earnings": ("فشار دستمزد بیشتر", "فشار دستمزد کمتر"),
+              "jolts_openings": ("تقاضای نیروی کار قوی‌تر", "سرد شدن بازار کار"),
+              "initial_claims": ("بازار کار ضعیف‌تر", "بازار کار قوی‌تر")}
 BASIS_CODE = {"mean3": "T", "mean4": "T", "prev": "P"}
-LRM = "\u200e"
-GLOSSARY_NOTE = "معنی اصطلاحات و ستون‌ها: پیام «راهنمای اصطلاحات» در پایان همین گزارش."
+LRM, RLI, PDI = "\u200e", "\u2067", "\u2069"
+GLOSSARY_NOTE = "معنی اصطلاحات: پیام آخر همین گزارش."
 
 
 # ───────────────────────────── plain-language readings ─────────────────────────────
@@ -261,14 +275,13 @@ def indicator_rows(f: Facts, asset: str) -> list[Row]:
         if k is not None and x is not None and abs(k) >= 0.5 and abs(x) >= 0.05:
             eff = int(np.sign(k * x))
         value, change = _value_change(f, key, rels.get(key), states.get(key), meta)
-        ticker = TICKER.get(key) or (meta.source_id if meta else key).lstrip("^")
+        ticker = SHORT.get(key) or (meta.source_id if meta else key).lstrip("^")[:5]
         rows.append(Row(key, ind_name(key), ticker, value, change, surprise, k, "w" if in_state else "d", eff,
                         conf, x))
     return sorted(rows, key=lambda r: -abs(r.coef) if r.coef is not None else 1)
 
 
 TABLE_WIDTH = 32  # characters per line; fits Telegram's monospace font on a phone without wrapping
-TICKER_W = 8
 
 
 def _pre(lines: list[str]) -> str:
@@ -277,11 +290,19 @@ def _pre(lines: list[str]) -> str:
     return "<pre>" + esc("\n".join(LRM + ln for ln in lines)) + "</pre>"
 
 
+def _rtl(cell: str) -> str:
+    """A Persian cell inside a left-to-right table line: isolated so its words and digits read right-to-left."""
+    return f"{RLI}{cell}{PDI}"
+
+
+def visible(line: str) -> str:
+    return re.sub("[‎⁦-⁩]", "", line)
+
+
 def _table(head: str, body: list[str]) -> list[str]:
-    """Header, a dashed divider, then the rows — split into stacked blocks of CHUNK_ROWS so a Telegram message never
-    cuts through a block (the splitter only cuts between blocks)."""
-    rule = "-" * len(head)
-    return [_pre([head, rule, *body[c:c + CHUNK_ROWS]]) for c in range(0, len(body), CHUNK_ROWS)]
+    """Header, a dashed divider, then the rows — in blocks of CHUNK_ROWS so a Telegram message never cuts a block."""
+    width = max(len(visible(x)) for x in [head, *body]) if body else len(head)
+    return [_pre([head, "-" * width, *body[c:c + CHUNK_ROWS]]) for c in range(0, len(body), CHUNK_ROWS)] or [_pre([head])]
 
 
 _SIGNED_ZERO = re.compile(r"[+-](?=0(?:\.0+)?(?![\d.,]))")
@@ -292,35 +313,118 @@ def nz(cell: str) -> str:
     return _SIGNED_ZERO.sub("", cell)
 
 
-def flagged(r: Row) -> bool:
-    """A reading that matters on its own: an unusual move (≥ 2σ), a large surprise, or an inverted curve."""
-    inverted = r.key.startswith("spread_") and r.value.startswith("-")
-    return inverted or (r.x is not None and (abs(r.x) >= 1 if r.coef_tag == "w" else abs(r.x) >= 2))
+# ───────────────────────────── release comparison (overview + decision summary) ─────────────────────────────
+
+def _rel_cfg() -> dict[str, dict]:
+    return {r["key"]: r for r in indicators_cfg()["releases"]}
 
 
-def impact_table(rows: list[Row]) -> list[str]:
-    """One row per indicator: its main reading and its impact on this asset (flag for decision-relevant anomalies)."""
-    head = f"{'Ticker':<{TICKER_W}}{'Value':>10}{'Coef':>7}{'D':>2}{'!':>2}"
-    body = [f"{r.ticker[:TICKER_W]:<{TICKER_W}}{nz(r.value):>10}"
-            f"{nz('—' if r.coef is None else f'{r.coef:+.1f}{r.coef_tag}'):>7}"
-            f"{ {1: '▲', -1: '▼', 0: '·'}[r.effect]:>2}{'!' if flagged(r) else '':>2}" for r in rows]
+def rel_value(key: str, v: float) -> str:
+    """A released figure in its own measure, without rescaling (the number is exactly the computed one)."""
+    m = _rel_cfg().get(key, {}).get("measure", "level")
+    meta = load_registry().get(key)
+    units = meta.units if meta else ""
+    if m in ("mom_pct", "qoq_ann", "yoy_pct"):
+        return nz(f"{v:+.2f}%")
+    if m in ("diff", "mom_change"):
+        return nz(f"{v:+,.0f}k" if units == "thousands" else f"{v:+,.2f}")
+    if units == "%":
+        return f"{v:.1f}%"
+    if units == "thousands":
+        return f"{v:,.0f}k"
+    return f"{v:,.0f}" if abs(v) >= 100 else f"{v:,.2f}"
+
+
+def basis_word(basis: str | None) -> str:
+    return "قبلی" if "prev" in str(basis or "") else "روند"
+
+
+def release_table(rels: list[dict]) -> str:
+    head = f"{'Name':<6}{'Actual':>9}{'Expect':>9}{'':>3}"
+    body = [f"{SHORT.get(r['indicator'], r['indicator'][:5]):<6}{rel_value(r['indicator'], r['actual']):>9}"
+            f"{rel_value(r['indicator'], r['expected']):>9}{'▲' if r['z'] > 0 else '▼':>3}" for r in rels]
+    return _table(head, body)[0]
+
+
+def release_line(r: dict) -> str:
+    """One plain sentence per release: above/below expectation (basis in one word) and what it means."""
+    hot = r["z"] > 0
+    head = f"• {esc(ind_name(r['indicator']))}: {'بالاتر' if hot else 'پایین‌تر'} از انتظار ({basis_word(r.get('basis'))})"
+    if abs(r["z"]) < 0.5:
+        return head + " — تفاوت ناچیز؛ پیام خاصی ندارد"
+    meaning = MEANING_FA.get(r["indicator"], ("عدد بالاتر", "عدد پایین‌تر"))[0 if hot else 1]
+    return head + f" — {meaning} (شگفتی {z_reading(r['z'])})"
+
+
+# ───────────────────────────── indicator table (sorted by next update) ─────────────────────────────
+
+def impact_word(k: float | None) -> str:
+    if k is None or not np.isfinite(k):
+        return "—"
+    a = abs(k)
+    return "ناچیز" if a < 1 else "ضعیف" if a < 3 else "متوسط" if a < 6 else "قوی"
+
+
+def next_updates(f: Facts, now: pd.Timestamp) -> dict[str, pd.Timestamp]:
+    """Next scheduled release of each series, from the snapshot calendar (collectors.calendar.upcoming())."""
+    c = f.calendar
+    if c.empty:
+        return {}
+    rel, out = releases_cfg(), {}
+    for e in c[c["scheduled_utc"] > now].sort_values("scheduled_utc").itertuples():
+        for k in rel.get(e.release_id, {}).get("series_keys", []):
+            out.setdefault(k, e.scheduled_utc)
+    if "fed_balance_sheet" in out:  # net liquidity = Fed balance sheet − TGA − reverse repo: updates with the H.4.1
+        out.setdefault("net_liquidity_weekly", out["fed_balance_sheet"])
+    return out
+
+
+def _compact(v: str) -> str:
+    v = nz(v.replace("%/m", "%").replace("pp", "%"))
+    return re.sub(r"(\d)\.(\d)\d", r"\1.\2", v) if len(v) > 6 else v
+
+
+@dataclass
+class TableRow:
+    row: Row
+    when: pd.Timestamp | None
+    daily: bool
+
+
+def table_rows(f: Facts, rows: list[Row], now: pd.Timestamp) -> list[TableRow]:
+    nxt, reg = next_updates(f, now), load_registry()
+    out = [TableRow(r, nxt.get(r.key), (reg[r.key].frequency == "D") if r.key in reg else False) for r in rows]
+    # soonest dated update first, then the daily market series, then series with no known date; ties by impact
+    return sorted(out, key=lambda t: (0 if t.when is not None else 1 if t.daily else 2,
+                                      t.when.value if t.when is not None else 0, -abs(t.row.coef or 0)))
+
+
+def indicator_table(trs: list[TableRow], now: pd.Timestamp) -> list[str]:
+    head = f"{'Name':<5} {'Value':>6} {'Impact':<7} Next"
+    body = []
+    for t in trs:
+        r = t.row
+        arrow = {1: " ▲", -1: " ▼", 0: ""}[r.effect] if impact_word(r.coef) not in ("—", "ناچیز") else ""
+        imp = impact_word(r.coef) + arrow
+        when = jdate_short(t.when, now) if t.when is not None else "روزانه" if t.daily else "—"
+        body.append(f"{r.ticker[:5]:<5} {_compact(r.value):>6} {_rtl(imp)}{' ' * (7 - len(imp))} {_rtl(when)}")
     return _table(head, body)
 
 
 def names_key(rows: list[Row]) -> str:
-    return "\n".join(f"• {esc(r.name_fa)} — {esc(r.ticker)}" for r in rows)
+    mom = {r["key"] for r in indicators_cfg()["releases"] if r["measure"] == "mom_pct"}
+    return "\n".join(f"• {esc(r.ticker)}: {esc(r.name_fa)}{' (ماهانه)' if r.key in mom else ''}" for r in rows)
 
 
-TABLE_LEGEND = ("• Value = آخرین مقدار · Coef = ضریب اثر از −۱۰ تا +۱۰ (w: ۴ هفته، d: ۲۴ ساعت پس از انتشار) · "
-                "D = اثر فعلی (▲ صعودی، ▼ نزولی، · ناچیز) · ! = حرکت غیرعادی (≥۲σ) یا وارونگی منحنی")
+TABLE_LEGEND = "اثر = قدرت اثر تاریخی بر همین دارایی، ▲▼ = جهت اثر فعلی · Next = به‌روزرسانی بعدی"
 
 
-def tables_section(rows: list[Row], asset: str, title: str) -> str:
-    """Heading → one-line legend → the table → the name key; blocks separated by blank lines."""
-    return "\n\n".join([title, TABLE_LEGEND, *impact_table(rows), "<b>نام شاخص‌ها</b>\n" + names_key(rows)])
+def tables_section(f: Facts, rows: list[Row], title: str, now: pd.Timestamp) -> str:
+    trs = table_rows(f, rows, now)
+    return "\n\n".join([title, TABLE_LEGEND, *indicator_table(trs, now), names_key([t.row for t in trs])])
 
 
-# ───────────────────────────── causal chain (plain sentences) ─────────────────────────────
+# ───────────────────────────── drivers (plain sentences) ─────────────────────────────
 
 def _move_phrase(state: float) -> str:
     verb = "بالا رفته" if state > 0 else "پایین آمده"
@@ -335,229 +439,156 @@ def val(v: float) -> str:
 
 
 def chain_sentences(f: Facts, asset: str, now: pd.Timestamp) -> list[str]:
-    """Cause → effect sentences (template; also the fallback for Claude's text). Kept narrative: strengths in words,
-    one number per driver (its share of the 4-week score); the table carries the coefficients."""
+    """The 2–3 main drivers of the 4-week score as plain cause → effect sentences, without numbers (template; also
+    the fallback for Claude's text). Releases are covered by the decision summary's release table."""
     cfg = indicators_cfg()
     ch = channel_fa(cfg)
     chans = {i["key"]: i.get("channels", []) for sec in ("releases", "state") for i in cfg[sec]}
     name = ASSET_FA[asset]
-    L = []
-    for r in f.releases:
-        if pd.Timestamp(r["release_utc"]) < now - pd.Timedelta(hours=24):
-            continue
-        k, _ = _coef(f, r["indicator"], asset, "24h")
-        hot = "بالاتر" if r["z"] > 0 else "پایین‌تر"
-        nm = esc(ind_name(r["indicator"]))
-        s = f"{nm} {hot} از انتظار آمد ({val(r['actual'])} در برابر {val(r['expected'])}؛ شگفتی {z_reading(r['z'])})."
-        if k is not None and abs(k) >= 1:
-            s += (f" در گذشته عدد بالاتر برای {name} {'مثبت' if k > 0 else 'منفی'} بوده (اثر {coef_reading(k)})، "
-                  f"پس این عدد {hot} برای {name} {'صعودی' if k * r['z'] > 0 else 'نزولی'} است.")
-        else:
-            s += f" این شگفتی در گذشته اثر محسوسی بر {name} نداشته است."
-        L.append(s)
     med = (f.macro.get(asset) or {}).get("medium") or {}
+    L = []
     for t in [t for t in med.get("top", []) if abs(t["contribution"]) >= 0.5][:3]:
         key, c = t["indicator"], t["contribution"]
         path = " و ".join(f"«{esc(ch.get(x, x))}»" for x in chans.get(key, [])[:2])
-        s = (f"{esc(ind_name(key))} در ۴ هفته‌ی اخیر {_move_phrase(t['state'])} است"
-             + (f" و از مسیر {path} اثر می‌گذارد" if path else "")
-             + f"؛ این برای {name} {'مثبت' if c > 0 else 'منفی'} است و حدود {num(max(abs(c), 1), '{:.0f}')} واحد "
-             + f"امتیاز ۴ هفته را {'بالا می‌برد' if c > 0 else 'پایین می‌آورد'}.")
-        L.append(s)
+        L.append(f"{esc(ind_name(key))} در ۴ هفته‌ی اخیر {_move_phrase(t['state'])} است"
+                 + (f" و از مسیر {path}" if path else "") + f" برای {name} {'مثبت' if c > 0 else 'منفی'} است.")
     if not L:
-        L.append(f"هیچ شاخصی در حال حاضر سهم محسوسی در امتیاز {name} ندارد؛ برآیند کلان نزدیک صفر است.")
+        L.append(f"هیچ شاخصی الان سهم محسوسی در امتیاز {name} ندارد؛ برآیند کلان نزدیک صفر است.")
     return L
 
 
-# ───────────────────────────── sections ─────────────────────────────
+# ───────────────────────────── body sections ─────────────────────────────
 
 def _utc(ts) -> pd.Timestamp:
     t = pd.Timestamp(ts)
     return t.tz_localize("UTC") if t.tzinfo is None else t
 
 
+def _px(v: float, asset: str) -> str:
+    """Summary-precision price: BTC to the nearest 100, gold to the dollar (the body carries the exact figure)."""
+    return num(round(v, -2) if asset == "BTC" else round(v), "{:,.0f}")
+
+
 def price_block(f: Facts, asset: str) -> list[str]:
     x = f.asset(asset)
-    er = x.get("expected_range") or {}
-    L = ["<b>💵 قیمت</b>"]
-    lv = "{:,.0f}"  # ranges and levels: whole units are enough to act on
+    er = (x.get("expected_range") or {}).get("4w_1sigma")
+    rng = f"دامنه‌ی محتمل ۴ هفته: {_px(min(er), asset)} تا {_px(max(er), asset)}" if er else ""
     if asset == "Gold":
-        gc = f.gold_futures()
-        px = x.get("price")
+        gc, px = f.gold_futures(), x.get("price")
+        L = []
         if gc:
-            L.append(f"• طلای واقعی (COMEX GC=F، با تأخیر): <b>{num(gc[0], '{:,.1f}')}</b> دلار/اونس")
+            L.append(f"💵 طلا (COMEX GC=F): <b>{num(gc[0], '{:,.0f}')}</b> دلار/اونس")
         if px is not None:
-            prem = (f" — {num(abs(px / gc[0] - 1) * 100, '{:.1f}')}٪ {'بالاتر' if px > gc[0] else 'پایین‌تر'} از GC=F"
-                    if gc else "")
-            bar = ((x.get("technical") or {}).get("1h") or {}).get("bar")
-            if gc and bar and abs(_utc(gc[1]) - _utc(bar)) > pd.Timedelta(minutes=30):
-                prem += " (زمان دو قیمت یکی نیست)"
-            L.append(f"• PAXG (نماینده‌ی بلادرنگ): <b>{num(px, '{:,.1f}')}</b>{prem}")
-        L.append("• مبنا: امتیاز کلان ۴ هفته و ۶ ماه ← GC=F؛ دامنه‌ها، سطوح و سیگنال ← PAXG.")
-    else:
-        L.append(f"• قیمت فعلی: <b>{num(x.get('price'), lv)}</b> دلار")
-    if er.get("1d") and er.get("4w_1sigma"):
-        L.append(f"• دامنه‌ی محتمل{' (PAXG)' if asset == 'Gold' else ''}: یک روز {num(min(er['1d']), lv)} تا "
-                 f"{num(max(er['1d']), lv)} · ۴ هفته {num(min(er['4w_1sigma']), lv)} تا {num(max(er['4w_1sigma']), lv)}")
-    return L
+            prem = f" ({num(abs(px / gc[0] - 1) * 100, '{:.1f}')}٪ {'بالاتر' if px > gc[0] else 'پایین‌تر'})" if gc else ""
+            L.append(f"• PAXG (بلادرنگ، مبنای سطوح و سیگنال): {num(px, '{:,.0f}')}{prem}")
+        if rng:
+            L.append(f"• {rng} (PAXG)")
+        return L
+    return [f"💵 قیمت: <b>{num(x.get('price'), '{:,.0f}')}</b> دلار" + (f" · {rng}" if rng else "")]
 
 
 def scores_section(f: Facts, asset: str) -> list[str]:
     m = f.macro.get(asset) or {}
-    L = ["<b>🧮 امتیاز کلان</b> (از −۱۰۰ تا +۱۰۰؛ آستانه‌ی سیگنال ±۱۵)"]
+    L = ["🧮 <b>امتیاز کلان</b> (−۱۰۰ تا +۱۰۰)"]
     for b, h in HORIZONS:
         sc = (m.get(b) or {}).get("score")
-        if b == "short" and sc is None:
-            L.append(f"• {h}: — (انتشار تازه‌ای نبوده)")
-            continue
-        L.append(f"• {h}: <b>{num(sc, '{:.0f}', sign=True)}</b> از ±۱۰۰ → {score_reading(sc)}")
+        L.append(f"• {h}: " + ("— (انتشار تازه‌ای نبوده)" if sc is None else
+                                f"{score_direction(sc)} ({nz(num(sc, '{:+.0f}'))})"))
     return L
 
 
-def signals_section(f: Facts, asset: str, names: dict | None) -> list[str]:
-    x = f.asset(asset)
+def _no_position_reason(x: dict) -> str:
+    wl = x.get("watchlist") or []
+    if wl:
+        if "edge" in " ".join(wl[0].get("blocked_by") or []):
+            return "ستاپ تکنیکال هست، اما این قاعده برتری آماری اثبات‌شده‌ی خارج از نمونه ندارد"
+        return "ستاپ تکنیکال هست، اما شواهد کلان ۴ هفته هم‌جهت و کافی نیست"
     med = (x.get("macro") or {}).get("medium")
-    L = ["<b>🎯 سیگنال معاملاتی</b>" + (" (بر پایه‌ی PAXG)" if asset == "Gold" else "")]
-    for s in x.get("signals", []):  # a live signal is actionable: its full card stays
-        L += signal_card(s, asset, blocked=False)
-    if x.get("signals"):
+    tail = "، و شواهد کلان هم برای تأیید سیگنال کافی نیست" if med is None or abs(med) < SCORE_GATE else ""
+    return "قاعده‌ی تکنیکال ستاپ ورودی نداده است" + tail
+
+
+def signals_section(f: Facts, asset: str, names: dict | None = None) -> list[str]:
+    x = f.asset(asset)
+    if x.get("signals"):  # a live signal is actionable: its full card stays
+        L = ["🎯 <b>سیگنال معاملاتی</b>" + (" (PAXG)" if asset == "Gold" else "")]
+        for s in x["signals"]:
+            L += signal_card(s, asset, blocked=False)
         return L
-    zone = (lambda z: f"{num(min(z), '{:,.0f}')} تا {num(max(z), '{:,.0f}')}")  # noqa: E731
-    for s in x.get("watchlist", []):
-        why = "برتری اثبات‌شده ندارد" if "edge" in " ".join(s.get("blocked_by") or []) else "کلان هم‌جهت نیست"
-        L.append(f"👀 ستاپ {word(s['direction'])} در فهرست نظارت (ورود {zone(s['entry_zone'])}) — مسدود: {why}")
-    L.append("سیگنالی صادر نشد:")
-    if not x.get("watchlist"):
-        L.append("• ستاپ تکنیکال: در کندل‌های اخیر ورودی نداده است")
-    ok = med is not None and abs(med) >= SCORE_GATE
-    L.append(f"• شرط کلان (±۱۵): الان {num(med, '{:.0f}', sign=True)} → {'برقرار' if ok else 'برقرار نیست'}")
-    summ = (x.get("backtest") or {}).get("summary") or {}
-    parts = []
-    for side, fa_side in (("long", "خرید"), ("short", "فروش")):
-        st = summ.get(side)
-        if not st:
-            continue
-        n, r = st.get("n_trades", 0), st.get("avg_r")
-        verdict = ("نمونه کم" if n < EDGE_TRADES else "زیان‌ده" if r is None or r <= 0 else "ناچیز" if r < 0.05 else "برقرار")
-        count = f"، {num(n, '{:.0f}')} معامله" if n < EDGE_TRADES else ""
-        parts.append(f"{fa_side} {num(r, '{:+.2f}R')} ({verdict}{count})")
-    if parts:
-        L.append("• برتری اثبات‌شده (میانگین R خارج از نمونه): " + "، ".join(parts))
-    return L
+    return [f"🎯 سیگنال: فعلاً هیچ — {_no_position_reason(x)}."]
 
 
 def prepos_section(f: Facts, asset: str) -> list[str]:
     rows = [r for r in (f.prepos or {}).get("live", []) if r.get("asset") == asset]
     if not rows:
         return []
-    L = ["<b>⏱ پیش‌موقعیت‌گیری پیش از انتشارها</b>"]
-    no_edge = True
-    for r in sorted(rows, key=lambda r: r["release_utc"]):
-        st = r.get("status")
-        bt = ((f.prepos.get("backtest") or {}).get(f"{r['release']}:{asset}") or {})
-        no_edge &= not bt.get("edge")
-        what = {"signal": "سیگنال فعال (پیام جداگانه)",
-                "watchlist": f"نشانه‌ی {word(r.get('direction'))}، بدون برتری اثبات‌شده",
-                "quiet": "بدون نشانه",
-                "waiting": f"بررسی از {tehran(r['window_opens'])}" if r.get("window_opens") else "هنوز شروع نشده"}
-        L.append(f"• {esc(r.get('name_fa') or r['release'])} ({tehran(r['release_utc'])}): "
-                 f"{what.get(st, PREPOS_STATUS_FA.get(st, str(st)))}")
-    if no_edge:
-        L.append("هیچ‌کدام برتری اثبات‌شده ندارند؛ سیگنالی ارسال نمی‌شود.")
-    return L
+    live = [r for r in rows if r.get("status") == "signal"]
+    if live:
+        return [f"⏱ پیش‌موقعیت‌گیری: سیگنال فعال پیش از {esc(live[0].get('name_fa') or live[0]['release'])} (پیام جداگانه)."]
+    names = "، ".join(dict.fromkeys(esc(r.get("name_fa") or r["release"]) for r in sorted(rows, key=lambda r: r["release_utc"])))
+    return [f"⏱ پیش‌موقعیت‌گیری ({names}): نشانه‌ای با برتری اثبات‌شده نیست."]
 
 
-def upcoming_events(f: Facts, asset: str, now: pd.Timestamp, days: int = 7, n: int = 3) -> list[str]:
+def upcoming_events(f: Facts, asset: str, now: pd.Timestamp, days: int = 7, n: int = 1) -> list[str]:
     c = f.calendar
     if c.empty:
         return []
     up = c[(c["scheduled_utc"] > now) & (c["scheduled_utc"] <= now + pd.Timedelta(days=days))]
-    up = up[up.get("importance", 5) >= 4] if "importance" in up else up
-    rel = releases_cfg()
-    rcfg = {r["key"] for r in indicators_cfg()["releases"]}
-    out = []
+    up = up[up["importance"] >= 4] if "importance" in up else up
+    rel, rcfg, out = releases_cfg(), _rel_cfg(), []
     for e in up.drop_duplicates("event_id").sort_values("scheduled_utc").head(n).itertuples():
         r = rel.get(e.release_id, {})
-        keys = [k for k in r.get("series_keys", []) if k in rcfg]
-        ks = [(k, _coef(f, k, asset, "24h")[0]) for k in keys]
-        ks = [(k, v) for k, v in ks if v is not None]
+        ks = [v for v in (_coef(f, k, asset, "24h")[0] for k in r.get("series_keys", []) if k in rcfg) if v is not None]
         line = f"{esc(r.get('name_fa', e.release_id))} — {tehran(e.scheduled_utc)}"
         if ks:
-            k, v = max(ks, key=lambda kv: abs(kv[1]))
-            line += f" (اثر تاریخی شگفتی آن: {coef_reading(v)})"
+            line += f" (اثر تاریخی: {impact_word(max(ks, key=abs))})"
         out.append(line)
     return out
 
 
 def invalidation(x: dict, med: float | None, fmt: str, base: str) -> list[str]:
-    """Price levels that would invalidate / change the 4-week conclusion, relative to where the price is now."""
+    """The one price level that would invalidate / change the 4-week view, relative to where the price is now."""
     px = x.get("price")
-    d1, h4 = (x.get("technical") or {}).get("1d") or {}, (x.get("technical") or {}).get("4h") or {}
+    d1 = (x.get("technical") or {}).get("1d") or {}
     hi, lo = d1.get("last_swing_high"), d1.get("last_swing_low")
-    hi4, lo4 = h4.get("last_swing_high"), h4.get("last_swing_low")
     if px is None or hi is None or lo is None:
-        return ["• سطح ابطال قیمتی در دسترس نیست؛ فقط تغییر علامت امتیاز ۴ هفته نتیجه را عوض می‌کند."]
-    lvl = lambda v, what: f"{num(v, fmt)} ({what}{base})"  # noqa: E731
+        return ["• سطح ابطال قیمتی در دسترس نیست."]
+    lv = lambda v: f"{num(v, fmt)}{base}"  # noqa: E731
     if med is not None and med >= 5:
         if px < lo:
-            return [f"• هشدار: قیمت هم‌اکنون زیر آخرین کف سوئینگ روزانه {lvl(lo, 'کف سوئینگ روزانه')} است؛ یعنی قیمت با "
-                    f"تمایل صعودی کلان هم‌جهت نیست. تا بسته‌شدن روزانه‌ی دوباره بالای آن، نتیجه‌ی صعودی تأیید نمی‌شود."]
-        out = f"• این نتیجه باطل می‌شود اگر: قیمت روزانه زیر {lvl(lo, 'آخرین کف سوئینگ روزانه')} بسته شود"
-        if lo4 and lo < lo4 < px:
-            out += f"؛ هشدار زودتر: شکست {lvl(lo4, 'کف سوئینگ ۴ ساعته')}"
-        return [out + "؛ یا امتیاز ۴ هفته منفی شود."]
+            return [f"• ⚠️ قیمت زیر کف روزانه {lv(lo)} است؛ تا بسته‌شدن دوباره بالای آن، تمایل صعودی تأیید نمی‌شود."]
+        return [f"• ابطال: بسته‌شدن روزانه زیر {lv(lo)} (کف روزانه)."]
     if med is not None and med <= -5:
         if px > hi:
-            return [f"• هشدار: قیمت هم‌اکنون بالای آخرین سقف سوئینگ روزانه {lvl(hi, 'سقف سوئینگ روزانه')} است؛ یعنی قیمت با "
-                    f"تمایل نزولی کلان هم‌جهت نیست. تا بسته‌شدن روزانه‌ی دوباره زیر آن، نتیجه‌ی نزولی تأیید نمی‌شود."]
-        out = f"• این نتیجه باطل می‌شود اگر: قیمت روزانه بالای {lvl(hi, 'آخرین سقف سوئینگ روزانه')} بسته شود"
-        if hi4 and px < hi4 < hi:
-            out += f"؛ هشدار زودتر: شکست {lvl(hi4, 'سقف سوئینگ ۴ ساعته')}"
-        return [out + "؛ یا امتیاز ۴ هفته مثبت شود."]
+            return [f"• ⚠️ قیمت بالای سقف روزانه {lv(hi)} است؛ تا بسته‌شدن دوباره زیر آن، تمایل نزولی تأیید نمی‌شود."]
+        return [f"• ابطال: بسته‌شدن روزانه بالای {lv(hi)} (سقف روزانه)."]
     if px < lo:
-        return [f"• قیمت هم‌اکنون زیر آخرین کف سوئینگ روزانه {lvl(lo, 'کف سوئینگ روزانه')} است، پس ساختار قیمت نزولی است "
-                f"در حالی که شواهد کلان خنثی‌اند. بسته‌شدن روزانه‌ی دوباره بالای آن این نشانه را خنثی می‌کند، بسته‌شدن بالای "
-                f"{lvl(hi, 'سقف سوئینگ روزانه')} نشانه‌ی صعودی است؛ عبور امتیاز ۴ هفته از ±۱۵ هم جهت کلان را تعیین می‌کند."]
+        return [f"• قیمت زیر کف روزانه {lv(lo)} است (ساختار نزولی)؛ بسته‌شدن بالای {lv(hi)} آن را صعودی می‌کند."]
     if px > hi:
-        return [f"• قیمت هم‌اکنون بالای آخرین سقف سوئینگ روزانه {lvl(hi, 'سقف سوئینگ روزانه')} است، پس ساختار قیمت صعودی "
-                f"است در حالی که شواهد کلان خنثی‌اند. بسته‌شدن روزانه‌ی دوباره زیر آن این نشانه را خنثی می‌کند، بسته‌شدن زیر "
-                f"{lvl(lo, 'کف سوئینگ روزانه')} نشانه‌ی نزولی است؛ عبور امتیاز ۴ هفته از ±۱۵ هم جهت کلان را تعیین می‌کند."]
-    return [f"• جهت‌دار شدن: بسته‌شدن روزانه بالای {lvl(hi, 'سقف سوئینگ روزانه')} نشانه‌ی صعودی و زیر "
-            f"{lvl(lo, 'کف سوئینگ روزانه')} نشانه‌ی نزولی است؛ یا عبور امتیاز ۴ هفته از ±۱۵."]
+        return [f"• قیمت بالای سقف روزانه {lv(hi)} است (ساختار صعودی)؛ بسته‌شدن زیر {lv(lo)} آن را نزولی می‌کند."]
+    return [f"• جهت‌دار شدن: بسته‌شدن روزانه بالای {lv(hi)} صعودی، زیر {lv(lo)} نزولی."]
 
 
 def conclusion(f: Facts, asset: str, now: pd.Timestamp) -> list[str]:
-    x = f.asset(asset)
-    m = f.macro.get(asset) or {}
-    name = ASSET_FA[asset]
-    L = [f"<b>✅ جمع‌بندی {name}</b>"]
-    top = ((m.get("medium") or {}).get("top") or [])
-    if top:
-        t = top[0]
-        L.append(f"• مهم‌ترین عامل الان: <b>{esc(ind_name(t['indicator']))}</b> — حدود "
-                 f"{num(max(abs(t['contribution']), 1), '{:.0f}')} واحد از امتیاز ۴ هفته، "
-                 f"{'به نفع افزایش' if t['contribution'] > 0 else 'به نفع کاهش'} قیمت.")
+    x, m = f.asset(asset), f.macro.get(asset) or {}
     med = (m.get("medium") or {}).get("score")
-    L += invalidation(x, med, "{:,.0f}", "، قیمت PAXG" if asset == "Gold" else "")
+    top = ((m.get("medium") or {}).get("top") or [])
+    driver = (f"؛ مهم‌ترین عامل: {esc(ind_name(top[0]['indicator']))} "
+              f"({'به نفع افزایش' if top[0]['contribution'] > 0 else 'به نفع کاهش'})" if top else "")
+    L = [f"✅ <b>جمع‌بندی</b>: ۴ هفته {score_direction(med)}{driver}."]
+    L += invalidation(x, med, "{:,.0f}", " (PAXG)" if asset == "Gold" else "")
     ev = upcoming_events(f, asset, now)
     if ev:
-        L.append("• رویدادهایی که می‌توانند نتیجه را عوض کنند:")
-        L += [f"   – {e}" for e in ev]
+        L.append(f"• رویداد مهم بعدی: {ev[0]}")
     return L
 
 
-# ───────────────────────────── decision summary (top of each asset message) ─────────────────────────────
-
-def _px(v: float, asset: str) -> str:
-    """Summary-precision price: BTC to the nearest 100, gold to the dollar (the body carries the exact figure)."""
-    return num(round(v, -2) if asset == "BTC" else round(v), "{:,.0f}")
-
+# ───────────────────────────── decision summary (top of each asset message; template only) ─────────────────────────────
 
 def _events(f: Facts, asset: str, now: pd.Timestamp, trigger: str | None) -> list[dict]:
     """What triggered this report, most impactful first: releases of the last 24 h ranked by |coefficient × surprise|
     for this asset, then flagged news (importance ≥ 4) with its classification for this asset."""
-    cfg = indicators_cfg()
-    chans = {i["key"]: i.get("channels", []) for i in cfg["releases"]}
+    chans = {i["key"]: i.get("channels", []) for i in indicators_cfg()["releases"]}
     out = []
     for r in f.releases:
         if pd.Timestamp(r["release_utc"]) < now - pd.Timedelta(hours=24):
@@ -570,134 +601,122 @@ def _events(f: Facts, asset: str, now: pd.Timestamp, trigger: str | None) -> lis
     news = f.important_news(now - pd.Timedelta(hours=24))
     for n in (news.head(2).to_dict("records") if not news.empty else []):
         out.append({"kind": "news", "n": n, "effect": n.get(col)})
-    return out[:2]
-
-
-def _no_position_reason(x: dict) -> str:
-    wl = x.get("watchlist") or []
-    if wl:
-        why = " ".join(wl[0].get("blocked_by") or [])
-        if "edge" in why:
-            return "ستاپ تکنیکال هست، اما این قاعده هنوز برتری آماری اثبات‌شده‌ی خارج از نمونه ندارد"
-        return "ستاپ تکنیکال هست، اما شواهد کلان ۴ هفته هم‌جهت و به اندازه‌ی کافی قوی نیست"
-    med = (x.get("macro") or {}).get("medium")
-    tail = "، و شواهد کلان هم برای تأیید سیگنال کافی نیست" if med is None or abs(med) < SCORE_GATE else ""
-    return "قاعده‌ی تکنیکال در حال حاضر ستاپ ورودی نداده است" + tail
+    return out
 
 
 def decision_summary(f: Facts, asset: str, now: pd.Timestamp, trigger: str | None = None) -> list[str]:
-    """Compact top section: trigger, impact on this asset, reasoning, probable direction, position (edge-gated).
-    Template only — every figure is a rounded copy of a number the system computed; the body below has the exact values."""
+    """Trigger (release table for the releases that matter for this asset), impact, reasoning, likely direction and a
+    position filled only by a signal that passed the out-of-sample edge gate. Template only (no Claude); every figure
+    is a computed number or a rounding of one."""
     name = ASSET_FA[asset]
     x, m = f.asset(asset), f.macro.get(asset) or {}
     ch = channel_fa(indicators_cfg())
     evs = _events(f, asset, now, trigger)
+    rels = [e for e in evs if e["kind"] == "release"]
+    relevant = [e for e in rels if e["k"] is not None and abs(e["k"]) >= 1][:3]
+    news = [e for e in evs if e["kind"] == "news"]
     L = [f"🧭 <b>خلاصه‌ی تصمیم — {name}</b>"]
-    # 1. trigger
-    names = []
-    for e in evs:
-        if e["kind"] == "release":
-            r = e["r"]
-            names.append(f"{esc(ind_name(r['indicator']))} {'بالاتر' if r['z'] > 0 else 'پایین‌تر'} از انتظار "
-                         f"(شگفتی {z_reading(r['z'])})")
-        else:
-            names.append(f"خبر: {esc(e['n'].get('title_fa') or e['n'].get('title'))}")
-    if names:
-        L.append("• رویداد: " + "؛ ".join(names))
-    elif trigger:
-        L.append(f"• رویداد: {esc(trigger)}")
+    if relevant:
+        L += ["• رویداد:", release_table([e["r"] for e in relevant])]
+        for e in relevant:
+            r, k = e["r"], e["k"]
+            L.append(f"{release_line(r)} → برای {name} {'صعودی' if k * r['z'] > 0 else 'نزولی'}")
+    elif rels:
+        L.append(f"• رویداد: {'، '.join(esc(ind_name(e['r']['indicator'])) for e in rels[:3])} منتشر شد؛ "
+                 f"اثر تاریخی آن بر {name} ناچیز است")
+    elif news:
+        L.append(f"• رویداد: خبر — {esc(news[0]['n'].get('title_fa') or news[0]['n'].get('title'))}")
     else:
-        L.append("• رویداد: رویداد تازه‌ای ثبت نشده؛ این گزارش دوره‌ای است")
-    # 2. impact on this asset + 3. reasoning (the same logic as the causal chain)
-    top = evs[0] if evs else None
-    if top and top["kind"] == "release" and top["k"] is not None and abs(top["k"]) >= 1:
+        L.append(f"• رویداد: {esc(trigger)}" if trigger else "• رویداد: رویداد تازه‌ای ثبت نشده؛ گزارش دوره‌ای")
+    top = relevant[0] if relevant else None
+    if top:
         r, k = top["r"], top["k"]
         eff = "صعودی" if k * r["z"] > 0 else "نزولی"
-        L.append(f"• اثر بر {name}: {eff} — اثر تاریخی {coef_reading(k)}")
-        path = "، ".join(f"«{esc(ch.get(c, c))}»" for c in top["channels"][:2])
-        L.append(f"• استدلال: {'از مسیر ' + path + '؛ ' if path else ''}در گذشته عدد بالاتر از انتظار برای {name} "
-                 f"{'مثبت' if k > 0 else 'منفی'} بوده، پس این عدد {'بالاتر' if r['z'] > 0 else 'پایین‌تر'} {eff} است.")
-    elif top and top["kind"] == "news" and top.get("effect") in ("bullish", "bearish"):
-        eff = "صعودی" if top["effect"] == "bullish" else "نزولی"
-        L.append(f"• اثر بر {name}: {eff} (طبقه‌بندی خودکار خبر)")
-        chans = [c for c in str(top["n"].get("channels") or "").split("|") if c]
-        L.append("• استدلال: " + (f"از مسیر {'، '.join('«' + esc(ch.get(c, c)) + '»' for c in chans[:2])}."
-                                   if chans else "بر پایه‌ی تیتر خبر؛ پیش از تصمیم متن کامل را بخوانید."))
+        L.append(f"• اثر بر {name}: {eff} — اثر تاریخی {impact_word(k)}")
+        path = " و ".join(f"«{esc(ch.get(c, c))}»" for c in top["channels"][:2])
+        L.append(f"• استدلال: {'از مسیر ' + path + '؛ ' if path else ''}عدد بالاتر در گذشته برای {name} "
+                 f"{'مثبت' if k > 0 else 'منفی'} بوده است.")
+    elif not rels and news and news[0].get("effect") in ("bullish", "bearish"):
+        L.append(f"• اثر بر {name}: {'صعودی' if news[0]['effect'] == 'bullish' else 'نزولی'} (طبقه‌بندی خودکار تیتر)")
     else:
-        if top:
-            L.append(f"• اثر بر {name}: ناچیز — این رویداد در گذشته اثر محسوسی بر {name} نداشته است")
-        tc = ((m.get("medium") or {}).get("top") or [])
-        t = next((t for t in tc if abs(t["contribution"]) >= 0.5), None)
-        if t:
-            L.append(f"• استدلال: مهم‌ترین عامل ۴ هفته {esc(ind_name(t['indicator']))} است که "
-                     f"{'بالا رفته' if t['state'] > 0 else 'پایین آمده'} و برای {name} "
-                     f"{'مثبت' if t['contribution'] > 0 else 'منفی'} ارزیابی می‌شود.")
-        else:
-            L.append(f"• استدلال: هیچ شاخصی الان سهم محسوسی در امتیاز {name} ندارد.")
-    # 4. probable direction (the system's Macro Scores, as words)
+        t = next((t for t in ((m.get("medium") or {}).get("top") or []) if abs(t["contribution"]) >= 0.5), None)
+        L.append(f"• استدلال: مهم‌ترین عامل ۴ هفته {esc(ind_name(t['indicator']))} است که برای {name} "
+                 f"{'مثبت' if t['contribution'] > 0 else 'منفی'} است." if t else
+                 f"• استدلال: هیچ شاخصی الان سهم محسوسی در امتیاز {name} ندارد.")
     sh, med = (m.get("short") or {}).get("score"), (m.get("medium") or {}).get("score")
     near = f"۲۴ ساعت {score_direction(sh)}، " if sh is not None else ""
     L.append(f"• جهت محتمل: {near}۴ هفته <b>{score_direction(med)}</b> — اطمینان {score_confidence(med)}")
-    # 5. position — only a signal that passed the out-of-sample edge gate
     sig = (x.get("signals") or [None])[0]
     pre = next((r for r in (f.prepos or {}).get("live", []) if r.get("asset") == asset and r.get("status") == "signal"
                 and r.get("entry") is not None), None)
     if sig:
         L.append(f"• پیشنهاد موقعیت: <b>{word(sig['direction'])}</b> · ورود ≈ {_px(min(sig['entry_zone']), asset)} تا "
                  f"{_px(max(sig['entry_zone']), asset)} · هدف ۱ ≈ {_px(sig['targets'][0], asset)} · حد ضرر ≈ "
-                 f"{_px(sig['stop_loss'], asset)} · اطمینان {word(sig['confidence'])} (جزئیات در بخش سیگنال)")
+                 f"{_px(sig['stop_loss'], asset)} · اطمینان {word(sig['confidence'])}")
     elif pre:
         L.append(f"• پیشنهاد موقعیت (پیش از انتشار): <b>{word(pre['direction'])}</b> · ورود ≈ {_px(pre['entry'], asset)} · "
-                 f"هدف ۱ ≈ {_px(pre['targets'][0], asset)} · حد ضرر ≈ {_px(pre['stop_loss'], asset)} (پیام جداگانه)")
+                 f"هدف ۱ ≈ {_px(pre['targets'][0], asset)} · حد ضرر ≈ {_px(pre['stop_loss'], asset)}")
     else:
-        L.append(f"• پیشنهاد موقعیت: <b>فعلاً هیچ موقعیتی پیشنهاد نمی‌شود</b> — {_no_position_reason(x)}.")
+        L.append(f"• پیشنهاد موقعیت: <b>فعلاً هیچ</b> — {_no_position_reason(x)}.")
     return L
 
 
 # ───────────────────────────── messages ─────────────────────────────
 
+def _block(lines: list[str]) -> str:
+    return "\n".join(lines)
+
+
 def asset_message(f: Facts, asset: str, now: pd.Timestamp, chain: list[str] | None = None, trigger: str | None = None,
                   names: dict | None = None) -> str:
     rows = indicator_rows(f, asset)
-    L = [*decision_summary(f, asset, now, trigger), "", "━━━━━━━━━━━━━━", "",
-         f"{ICON[asset]} <b>گزارش {ASSET_FA[asset]} ({'BTC' if asset == 'BTC' else 'طلا / XAU'})</b> — {tehran(now)} (تهران)"]
-    if trigger:
-        L.append(f"علت گزارش: {esc(trigger)}")
-    L += ["", *price_block(f, asset), "", *scores_section(f, asset)]
-    L += ["", "<b>🔗 زنجیره‌ی علّی — چرا این امتیاز</b>"]
-    L += [f"{i}. {s}" for i, s in enumerate(chain or chain_sentences(f, asset, now), 1)]
     shown = [r for r in rows if r.coef is not None and abs(r.coef) >= 1][:TOP_ROWS]
-    title = (f"<b>📋 مؤثرترین شاخص‌ها برای {ASSET_FA[asset]}</b> — {num(len(shown), '{:.0f}')} از "
-             f"{num(len(rows), '{:.0f}')} شاخص؛ جدول کامل در پیام بعد")
-    out = "\n".join(L) + "\n\n" + tables_section(shown, asset, title) + "\n"
-    L = ["", *signals_section(f, asset, names)]
-    pp = prepos_section(f, asset)
-    if pp:
-        L += ["", *pp]
-    L += ["", *conclusion(f, asset, now), "", GLOSSARY_NOTE]
-    return out + "\n".join(L) + dashboard_link() + "\n\n" + DISCLAIMER
+    title = "📋 <b>شاخص‌های مؤثر</b> (به ترتیب به‌روزرسانی بعدی؛ جدول کامل در پیام بعد)"
+    parts = [_block(decision_summary(f, asset, now, trigger)), "━━━━━━━━━━━━━━",
+             f"{ICON[asset]} <b>گزارش {ASSET_FA[asset]}</b> — {tehran(now)}",
+             _block(price_block(f, asset)), _block(scores_section(f, asset)),
+             _block(["🔗 <b>عوامل اصلی</b>", *[f"{i}. {s}" for i, s in enumerate((chain or chain_sentences(f, asset, now))[:3], 1)]]),
+             tables_section(f, shown, title, now),
+             _block(signals_section(f, asset, names) + prepos_section(f, asset)),
+             _block(conclusion(f, asset, now)), GLOSSARY_NOTE]
+    return "\n\n".join(parts)
 
 
-def table_message(f: Facts, asset: str) -> str:
+def table_message(f: Facts, asset: str, now: pd.Timestamp | None = None) -> str:
+    now = now if now is not None else pd.Timestamp.now(tz="UTC")
     rows = indicator_rows(f, asset)
-    title = f"📋 <b>جدول کامل اثر شاخص‌ها بر {ASSET_FA[asset]}</b> — {num(len(rows), '{:.0f}')} شاخص"
-    return tables_section(rows, asset, title) + "\n\n" + DISCLAIMER
+    title = f"📋 <b>جدول کامل شاخص‌ها — {ASSET_FA[asset]}</b> (به ترتیب به‌روزرسانی بعدی)"
+    return tables_section(f, rows, title, now)
+
+
+def outlook_sentence(reg: dict) -> str:
+    """Plain-language outlook from the regime model's own outputs (signs of its axes and its phase probabilities)."""
+    ax = reg.get("axes") or {}
+    parts = []
+    if ax.get("G") is not None:
+        parts.append(f"رشد {'بالای' if ax['G'] > 0 else 'زیر'} میانگین تاریخی است"
+                     + (f" و {'رو به بهبود' if ax['g'] > 0 else 'رو به کندی'}" if ax.get("g") is not None else ""))
+    if ax.get("p") is not None:
+        parts.append(f"فشار تورم و نقدینگی {'رو به افزایش' if ax['p'] > 0 else 'رو به کاهش'}")
+    probs = reg.get("probabilities") or {}
+    cur = reg.get("regime")
+    others = sorted(((p, r) for r, p in probs.items() if r != cur), reverse=True)
+    risk = f" با ریسک نزدیک شدن به {word(others[0][1])}" if others and others[0][0] >= 0.15 else ""
+    head = "؛ ".join(parts)
+    return (head + "؛ " if head else "") + f"چشم‌انداز: ادامه‌ی {word(cur)}{risk}"
 
 
 def overview_message(f: Facts, now: pd.Timestamp, trigger: str | None = None, weekly: bool = False) -> str:
     s = f.state
     title = "🗓 <b>خلاصه‌ی هفتگی — نمای کلی بازار</b>" if weekly else "🌐 <b>نمای کلی بازار</b>"
-    L = [f"{title} — {tehran(now)} (تهران)"]
+    L = [f"{title} — {tehran(now)}"]
     if trigger:
         L.append(f"علت گزارش: {esc(trigger)}")
-    L += ["", "<b>زمینه‌ی مشترک بیت‌کوین و طلا</b>"]
     reg = s.get("regime") or {}
     if reg.get("regime"):
         p = (reg.get("probabilities") or {}).get(reg["regime"], 0)
-        L.append(f"🧭 فاز اقتصادی: <b>{esc(word(reg['regime']))}</b> — احتمال {num(p * 100, '{:.0f}')}٪ "
-                 "(مدل ۴ فاز: بهبود، رونق، اوج، رکود؛ از رشد، تورم و نقدینگی)")
-        for t in (reg.get("triggers") or [])[:2]:
-            L.append(f"   {esc(fa(t))}")
+        L += ["", f"🧭 فاز اقتصادی: <b>{esc(word(reg['regime']))}</b> — احتمال {num(p * 100, '{:.0f}')}٪",
+              f"   {outlook_sentence(reg)}"]
     st = (s.get("fed_stance") or {}).get("score")
     if st is not None:
         L.append(f"🏦 موضع فدرال: <b>{num(st, '{:.0f}', sign=True)}</b> از بازه‌ی −۱۰۰ (کاملاً انبساطی) تا +۱۰۰ "
@@ -705,89 +724,57 @@ def overview_message(f: Facts, now: pd.Timestamp, trigger: str | None = None, we
     fw = s.get("fedwatch_next") or {}
     if fw.get("meeting"):
         pct = {k: num((fw.get(k) or 0) * 100, "{:.0f}") for k in ("p_cut", "p_hold", "p_hike")}
-        L.append(f"📈 جلسه‌ی بعدی FOMC ({ltr(esc(fw['meeting']))}): احتمال کاهش نرخ {pct['p_cut']}٪ · "
+        L.append(f"📈 جلسه‌ی بعدی FOMC ({jdate(str(fw['meeting']))}): احتمال کاهش نرخ {pct['p_cut']}٪ · "
                  f"بدون تغییر {pct['p_hold']}٪ · افزایش {pct['p_hike']}٪ (از قیمت قراردادهای آتی وجوه فدرال)")
+    parts = [_block(L)]
     since = now - pd.Timedelta(days=7 if weekly else 1)
     rel = [r for r in f.releases if pd.Timestamp(r["release_utc"]) >= since]
     if rel:
-        L += ["", f"<b>چه منتشر شد ({'۷ روز' if weekly else '۲۴ ساعت'} اخیر)</b>"]
-        for r in rel:
-            hot = "بالاتر از انتظار 🔼" if r["z"] > 0 else "پایین‌تر از انتظار 🔽"
-            L.append(f"• {esc(ind_name(r['indicator']))} ({ltr(esc(r['obs_date']))}): {val(r['actual'])} در برابر "
-                     f"{val(r['expected'])} ({basis_fa(r.get('basis'))}) — {hot}، شگفتی "
-                     f"{num(r['z'], '{:+.1f}σ')} ({z_reading(r['z'])})")
+        parts += [f"📊 <b>چه منتشر شد ({'۷ روز' if weekly else '۲۴ ساعت'} اخیر)</b>", release_table(rel),
+                  _block([release_line(r) for r in rel])]
     news = f.important_news(since)
     if not news.empty:
-        L += ["", "<b>خبرهای مهم</b>"]
-        L += [f"• {esc(r.title_fa)} ({'★' * int(r.importance)})" for r in news.head(5).itertuples()]
+        parts.append(_block(["📰 <b>خبرهای مهم</b>", *[f"• {esc(r.title_fa)} ({'★' * int(r.importance)})"
+                                                     for r in news.head(5).itertuples()]]))
     c = f.calendar
     if not c.empty:
         nxt = c[(c["scheduled_utc"] > now) & (c["scheduled_utc"] <= now + pd.Timedelta(days=7))]
         if not nxt.empty:
             relc = releases_cfg()
-            L += ["", "<b>تقویم ۷ روز آینده</b>"]
-            for e in nxt.drop_duplicates("event_id").sort_values("scheduled_utc").itertuples():
-                imp = int(getattr(e, "importance", 0) or 0)
-                L.append(f"• {tehran(e.scheduled_utc)} — {esc(relc.get(e.release_id, {}).get('name_fa', e.release_id))} "
-                         f"{'★' * imp}")
-    L += ["", "پیام‌های بعدی: گزارش کامل بیت‌کوین، گزارش کامل طلا، جدول کامل شاخص‌ها و راهنمای اصطلاحات."]
-    return "\n".join(L) + dashboard_link() + "\n\n" + DISCLAIMER
+            parts.append(_block(["📅 <b>تقویم ۷ روز آینده</b>", *[
+                f"• {tehran(e.scheduled_utc)} — {esc(relc.get(e.release_id, {}).get('name_fa', e.release_id))} "
+                f"{'★' * int(getattr(e, 'importance', 0) or 0)}"
+                for e in nxt.drop_duplicates("event_id").sort_values("scheduled_utc").itertuples()]]))
+    return "\n\n".join(parts) + dashboard_link()
 
 
 GLOSSARY = [
-    ("امتیاز کلان (Macro Score)",
-     "عددی از −۱۰۰ تا +۱۰۰ برای هر افق (۲۴ ساعت، ۴ هفته، ۶ ماه). از جمع «ضریب اثر × تغییر فعلی» همه‌ی شاخص‌ها ساخته "
-     "می‌شود. مثبت = شرایط کلان به نفع افزایش قیمت، منفی = به نفع کاهش. زیر ±۵ خنثی، ۵ تا ۱۵ ضعیف، ۱۵ تا ۳۵ متوسط، "
-     "۳۵ تا ۶۰ قوی، بالای ۶۰ بسیار قوی. سیگنال معاملاتی دست‌کم ±۱۵ هم‌جهت لازم دارد."),
-    ("ضریب اثر (Impact Coefficient)",
-     "عددی از −۱۰ تا +۱۰ که می‌گوید در گذشته یک حرکت یک‌σ این شاخص، قیمت دارایی را چقدر و در چه جهتی جابه‌جا کرده است. "
-     "مثبت یعنی «شاخص بالاتر ← قیمت بالاتر». ۱۰ یعنی اثر بزرگ، از نظر آماری معنادار و با دست‌کم ۳۰ مشاهده‌ی مستقل. "
-     "زیر ۱ تقریباً بی‌اثر، ۱ تا ۳ ضعیف، ۳ تا ۶ متوسط، بالای ۶ قوی. این یک همبستگی تاریخی است، نه پیش‌بینی."),
-    ("σ (سیگما، انحراف معیار)",
-     "اندازه‌ی نوسان معمول. «+۲σ» یعنی حرکتی دو برابر حرکت معمول که کمتر پیش می‌آید. دامنه‌ی ±۱σ حدود ۶۸٪ احتمال را پوشش می‌دهد."),
-    ("شگفتی (Surprise)",
-     "فاصله‌ی عدد منتشرشده از «انتظار»، تقسیم بر اندازه‌ی معمول این فاصله (بر حسب σ). چون اجماع تحلیلگران منبع رایگان "
-     "ندارد، انتظار = روند (میانگین انتشارهای قبلی، T) یا مقدار قبلی (P)."),
-    ("R (واحد ریسک)",
-     "فاصله‌ی ورود تا حد ضرر. +۱R یعنی سودی به اندازه‌ی ریسک، −۱R یعنی خوردن حد ضرر. «میانگین R» متوسط نتیجه‌ی هر معامله "
-     "است؛ بزرگ‌تر از صفر یعنی قاعده در مجموع سودده بوده است."),
-    ("R:R", "نسبت سود هدف به ریسک؛ R:R ۲ یعنی سود بالقوه دو برابر ضرر بالقوه."),
-    ("خارج از نمونه (Out-of-sample)",
-     "آزمون روی داده‌هایی که در ساختن یا تنظیم قاعده استفاده نشده‌اند (walk-forward: تنظیم روی گذشته، آزمون روی دوره‌ی بعد). "
-     "فقط نتیجه‌ی خارج از نمونه نشانه‌ی برتری واقعی است."),
-    ("نرخ برد / hit rate",
-     "درصد معامله‌های سودده (نرخ برد) یا درصد دفعاتی که جهت پیش‌بینی درست بوده (hit rate). بدون میانگین R معنا ندارد: "
-     "نرخ برد ۴۰٪ با سودهای بزرگ می‌تواند سودده باشد."),
-    ("اطمینان ضریب (H/M/L)",
-     "زیاد: آماره‌ی t دست‌کم ۲٫۵۸ و ۵۰ مشاهده‌ی مستقل؛ متوسط: t دست‌کم ۱٫۹۶ و ۳۰ مشاهده؛ کم: بقیه."),
-    ("p (p-value)", "احتمال این‌که نتیجه‌ای به همین خوبی صرفاً از شانس بیاید؛ زیر ۰٫۰۵ معنادار حساب می‌شود."),
-    ("ATR", "میانگین دامنه‌ی واقعی نوسان روزانه در ۱۴ روز اخیر؛ مبنای دامنه‌ی محتمل یک روز."),
-    ("سقف/کف سوئینگ", "آخرین نقطه‌ی برگشت قیمت در نمودار (روزانه یا ۴ ساعته)؛ شکستن آن یعنی تغییر ساختار روند."),
-    ("فاز اقتصادی", "یکی از ۴ فاز چرخه (بهبود، رونق، اوج، رکود) که مدل از سطح و شتاب رشد، تورم و نقدینگی تخمین می‌زند."),
-    ("موضع فدرال", "از −۱۰۰ (کاملاً انبساطی) تا +۱۰۰ (کاملاً انقباضی)؛ از مسیر نرخ، قیمت آتی‌ها، ترازنامه و بیانیه‌ها."),
-    ("GC=F و PAXG",
-     "GC=F قرارداد آتی طلای COMEX (قیمت واقعی طلا، با تأخیر). PAXG توکنی است که هر واحد آن پشتوانه‌ی یک اونس طلا دارد و "
-     "۲۴ ساعته معامله می‌شود؛ نماینده‌ی بلادرنگ است و می‌تواند کمی بالاتر یا پایین‌تر از طلای واقعی باشد."),
-    ("پیش‌موقعیت‌گیری", "حرکت‌های یک‌طرفه‌ی بازار در ساعت‌های پیش از انتشار یک داده (قیمت، جریان سفارش، قراردادهای باز، نرخ‌ها)."),
+    ("امتیاز کلان", "از −۱۰۰ تا +۱۰۰؛ برآیند اثر تاریخی شاخص‌ها با تغییرات فعلی‌شان. زیر ±۱۵ برای سیگنال کافی نیست."),
+    ("اثر (قوی/متوسط/ضعیف/ناچیز)", "اندازه‌ی اثر تاریخی شاخص بر همین دارایی؛ ▲▼ جهت اثر فعلی آن است. همبستگی تاریخی است، نه پیش‌بینی."),
+    ("انتظار (روند/قبلی)", "اجماع رایگان در دسترس نیست؛ انتظار = میانگین انتشارهای قبلی (روند) یا مقدار قبلی."),
+    ("شگفتی", "فاصله‌ی عدد منتشرشده از انتظار، نسبت به اندازه‌ی معمول این فاصله (کوچک، متوسط، بزرگ)."),
+    ("برتری اثبات‌شده", "قاعده در آزمون خارج از نمونه، پس از کارمزد، سود متوسط مثبت و معنادار داشته؛ بدون آن سیگنالی ارسال نمی‌شود."),
+    ("R و R:R", "R = فاصله‌ی ورود تا حد ضرر؛ R:R = نسبت سود هدف به این ریسک (در کارت سیگنال)."),
+    ("دامنه‌ی محتمل ۴ هفته", "بازه‌ای که قیمت با حدود ۶۸٪ احتمال در آن می‌ماند، بر پایه‌ی نوسان اخیر."),
+    ("کف/سقف روزانه", "آخرین نقطه‌ی برگشت قیمت در نمودار روزانه؛ شکستن آن یعنی تغییر ساختار روند."),
+    ("GC=F و PAXG", "GC=F قیمت آتی طلای COMEX (با تأخیر)؛ PAXG توکن طلا، نماینده‌ی بلادرنگ و مبنای سطوح و سیگنال."),
+    ("پیش‌موقعیت‌گیری", "حرکت یک‌طرفه‌ی بازار در ساعت‌های پیش از انتشار یک داده."),
+    ("فاز اقتصادی", "یکی از ۴ فاز چرخه (بهبود، رونق، اوج، رکود) از سطح و شتاب رشد، تورم و نقدینگی."),
+    ("موضع فدرال", "از −۱۰۰ (کاملاً انبساطی) تا +۱۰۰ (کاملاً انقباضی)."),
 ]
 
 
 def glossary_message() -> str:
-    L = ["📖 <b>راهنمای اصطلاحات</b>"]
-    for term, desc in GLOSSARY:
-        L += ["", f"<b>{term}</b>: {desc}"]
-    return "\n".join(L)
+    """The last message of every report — it carries the report's single disclaimer."""
+    return "\n".join(["📖 <b>راهنمای اصطلاحات</b>", *[f"• <b>{t}</b>: {d}" for t, d in GLOSSARY]]) + "\n\n" + DISCLAIMER
 
 
 def report_messages(f: Facts, now: pd.Timestamp, chains: dict[str, list[str]] | None = None, trigger: str | None = None,
                     names: dict | None = None, weekly: bool = False) -> list[tuple[str, str]]:
-    """(kind, html) in sending order: overview, BTC, gold, full tables, glossary."""
+    """(kind, html) in sending order: overview, BTC, gold, full tables, glossary (with the disclaimer, once)."""
     out = [("overview", overview_message(f, now, trigger, weekly))]
-    for a, k in (("BTC", "btc"), ("Gold", "gold")):
-        if f.asset(a) or f.macro.get(a):
-            out.append((f"report_{k}", asset_message(f, a, now, (chains or {}).get(a), trigger, names)))
-    for a, k in (("BTC", "btc"), ("Gold", "gold")):
-        if f.asset(a) or f.macro.get(a):
-            out.append((f"table_{k}", table_message(f, a)))
+    assets = [(a, k) for a, k in (("BTC", "btc"), ("Gold", "gold")) if f.asset(a) or f.macro.get(a)]
+    out += [(f"report_{k}", asset_message(f, a, now, (chains or {}).get(a), trigger, names)) for a, k in assets]
+    out += [(f"table_{k}", table_message(f, a, now)) for a, k in assets]
     out.append(("glossary", glossary_message()))
     return out

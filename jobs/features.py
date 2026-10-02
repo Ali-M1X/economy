@@ -87,7 +87,11 @@ def compute_all(data: dict[str, pd.DataFrame], vintages: dict[str, pd.DataFrame]
     last = rules.iloc[-1]
     res["regime_now"] = {"date": rules.index[-1].date(), "regime": last["regime"],
                          "probabilities": {r: round(float(last[r]), 3) for r in regime.REGIMES},
-                         "triggers": regime.switch_triggers(ax.loc[rules.index[-1]], last["regime"])}
+                         "triggers": regime.switch_triggers(ax.loc[rules.index[-1]], last["regime"]),
+                         # latest axes (growth level G, momentum g, inflation/liquidity pressure p, outlook m) —
+                         # the reports turn their signs into a plain-language outlook sentence
+                         "axes": {k: (None if pd.isna(v) else round(float(v), 3))
+                                  for k, v in ax.loc[rules.index[-1], ["G", "g", "p", "m"]].items()}}
     prices = {}
     if "btc_usd_daily" in data:
         prices["BTC"] = as_series(data["btc_usd_daily"])

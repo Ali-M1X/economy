@@ -78,10 +78,10 @@ ASSET_SYSTEM = """You write the causal-chain section of a Persian (Farsi) report
 Rules:
 - Write in Persian. Keep tickers and indicator names (CPI, DXY, FOMC …) in English where the facts do.
 - Use ONLY numbers that appear in FACTS or TEMPLATE, written as they appear (you may round). Never add any other number.
-- 3 to 6 short, complete sentences, one per line, numbered "1." "2." …; each sentence states cause → effect explicitly
-  (what changed, through which channel, and what it means for {asset_fa}). No lists of tickers, no arrows.
-- Keep it narrative: describe strength in words (weak / moderate / strong), at most one number per sentence, no
-  coefficients, σ values or confidence labels — the report's table carries those.
+- 2 or 3 short, complete sentences (the main drivers), one per line, numbered "1." "2." …; each states cause → effect
+  explicitly (what changed, through which channel, and what it means for {asset_fa}). No lists of tickers, no arrows.
+- Keep it narrative: describe strength in words (weak / moderate / strong), no numbers at all, no coefficients,
+  σ values or confidence labels — the report's table carries those.
 - Cover only {asset_fa}. If the evidence is weak (scores near zero, coefficients below 1), say so plainly.
 - Plain text only, no Markdown, no HTML, no investment advice."""
 
