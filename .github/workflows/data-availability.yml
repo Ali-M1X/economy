@@ -3,7 +3,7 @@ name: data-availability
 # coefficients & Macro Score → Phase 4 technicals & signals → (Telegram) → dashboard render check → artifact.
 #
 #   push / manual with mode "none"  development run: no Claude, no Telegram
-#   called by schedule.yml          mode release | report | weekly | headsup → Persian messages to Telegram
+#   called by schedule.yml          mode release | report | weekly | daily → Persian messages to Telegram
 #
 # Database storage is OFF unless the repository variable ENABLE_DB_STORAGE is "true"
 # (Settings → Secrets and variables → Actions → Variables). While it is off, DATABASE_URL is not even
@@ -12,9 +12,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "none = no messages; report / weekly / headsup send to Telegram (outbox artifact if no bot secrets)"
+        description: "none = no messages; report / weekly / daily send to Telegram (outbox artifact if no bot secrets)"
         type: choice
-        options: [none, report, weekly, headsup]
+        options: [none, report, weekly, daily]
         default: none
   workflow_call:
     inputs:
@@ -58,6 +58,9 @@ jobs:
             state/health_last.json
             state/headsup_sent.json
             state/daily_sent.json
+            state/daily_claim.json
+            state/watched.json
+            state/last_scores.json
             state/reported_events.json
             state/fed_docs_scored.csv
           key: mp-state-pipe-${{ github.run_id }}
@@ -105,10 +108,10 @@ jobs:
         if: (success() || failure()) && env.MODE != 'none'
         run: |
           case "$MODE" in
-            release|report) python -m jobs.notify report --root output --state state --trigger "$TRIGGER" ;;
+            release)        python -m jobs.notify report --root output --state state --trigger "$TRIGGER" --changes ;;
+            report)         python -m jobs.notify report --root output --state state --trigger "$TRIGGER" ;;
             weekly)         python -m jobs.notify weekly --root output --state state ;;
-            headsup)        python -m jobs.notify daily --root output --state state --trigger "$TRIGGER"
-                            python -m jobs.notify headsup --root output --state state
+            daily|headsup)  python -m jobs.notify daily --root output --state state --trigger "$TRIGGER"
                             python -m jobs.notify health --root output --state state ;;
           esac
           if [ "$MODE" = release ] && [ -n "$EVENTS" ]; then python -m jobs.scheduler mark --events "$EVENTS" --state state; fi
@@ -126,6 +129,9 @@ jobs:
             state/health_last.json
             state/headsup_sent.json
             state/daily_sent.json
+            state/daily_claim.json
+            state/watched.json
+            state/last_scores.json
             state/reported_events.json
             state/fed_docs_scored.csv
           key: mp-state-pipe-${{ github.run_id }}-${{ github.run_attempt }}

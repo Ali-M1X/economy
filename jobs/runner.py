@@ -26,7 +26,7 @@ _pipeline_lock = threading.Lock()
 
 
 def crons() -> list[str]:
-    return [scheduler.INTRADAY, scheduler.HEADSUP, *scheduler.DAILY_RETRY, scheduler.WEEKLY, scheduler.PREPOS, *scheduler.RELEASE]
+    return [scheduler.INTRADAY, scheduler.DAILY, scheduler.WEEKLY, scheduler.PREPOS, *scheduler.RELEASE]
 
 
 _DOW = ["sun", "mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -43,23 +43,46 @@ def trigger(cron: str):
     return CronTrigger(minute=minute, hour=hour, day=day, month=month, day_of_week=dow, timezone="UTC")
 
 
-def fire(cron: str, data: Path, run_pipeline=pipeline.run, run_intraday=None, run_prepos=None) -> str:
+def fire(cron: str, data: Path, run_pipeline=pipeline.run, run_intraday=None, run_prepos=None,
+         sleep_fn=scheduler.sleep_until) -> str:
     """What one cron firing does (returns the mode, for logging and tests)."""
     state = data / "state"
     (data / "heartbeat").touch()  # docker healthcheck: the runner fires at least every 15 minutes
-    p = scheduler.plan(cron, pd.Timestamp.now(tz="UTC"), state)
+    now = pd.Timestamp.now(tz="UTC")
+    p = scheduler.plan(cron, now, state)
     log.info("cron %r → %s (%s)", cron, p.mode, p.reason)
+    if p.mode in ("daily", "watch", "release"):
+        scheduler.claim(state, p, now)  # before the (long) wait / run
+    ids = ",".join(e["event_id"] for e in p.events)
     if p.mode == "intraday":
         (run_intraday or _intraday)(data, state)
     elif p.mode == "prepos":
         (run_prepos or _prepos)(data, state)
-    elif p.mode in ("release", "headsup", "weekly"):
-        ids = ",".join(e["event_id"] for e in p.events)
-        if ids:
-            scheduler.mark(state, [e["event_id"] for e in p.events])  # claim before the (long) run
+    elif p.mode == "watch":
+        sleep_fn(p.wait_until)
+        _prealert(data, state, ids)
+        sleep_fn(p.events[0]["scheduled_utc"])
+        with _pipeline_lock:
+            run_pipeline("release", ids, p.trigger, data / "runs", state)
+    elif p.mode in ("release", "daily", "weekly"):
+        if p.wait_until:
+            sleep_fn(p.wait_until)
         with _pipeline_lock:
             run_pipeline(p.mode, ids, p.trigger, data / "runs", state)
     return p.mode
+
+
+def _prealert(data: Path, state: Path, ids: str) -> None:
+    current = data / "current"
+    if not current.exists():
+        log.info("prealert: no snapshot yet")
+        return
+    env = {**os.environ, "MACRO_PULSE_OUTPUT_DIR": str(current)}
+    for argv in (["jobs.prepos", "--from-cache", str(current / "cache"), "--state", str(state), "--refresh-live",
+                  "--live-only", str(current / "prepos.json")],
+                 ["jobs.notify", "prealert", "--root", str(current), "--events", ids]):
+        out = subprocess.run([sys.executable, "-m", *argv], capture_output=True, text=True, env=env)
+        sys.stdout.write(out.stdout[-2000:])
 
 
 def _prepos(data: Path, state: Path) -> None:
@@ -95,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default="/data")
-    ap.add_argument("--run-now", choices=["intraday", "headsup", "weekly", "report"], help="run one mode immediately, then schedule")
+    ap.add_argument("--run-now", choices=["intraday", "daily", "weekly", "report"], help="run one mode immediately, then schedule")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     data = Path(args.data)

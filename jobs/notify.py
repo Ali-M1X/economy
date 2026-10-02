@@ -2,7 +2,9 @@
 
     python -m jobs.notify report  --root output [--trigger "CPI release"]   # overview + BTC + gold + tables + glossary
     python -m jobs.notify weekly  --root output                            # the same, as the weekly summary
-    python -m jobs.notify daily   --root output                            # the report, at most once per Tehran day
+    python -m jobs.notify daily   --root output                            # the 09:00 Tehran report, once per day
+    python -m jobs.notify report  --root output --changes                  # after a release: + what changed
+    python -m jobs.notify prealert --root snap --events nfp-2026-10-02     # shortly before an important release
     python -m jobs.notify headsup --root output                            # releases scheduled for tomorrow (Tehran)
     python -m jobs.notify news    --root output                            # alerts for new importance ≥ 4 news
     python -m jobs.notify health  --root output                            # warning only, if the data is unhealthy
@@ -18,6 +20,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -79,18 +82,43 @@ def gate(root: Path, state: Path | None, now: pd.Timestamp, context: str, dry_ru
     return False
 
 
+def snapshot_scores(f, now: pd.Timestamp) -> dict:
+    """What the next report compares against: price and macro scores per asset."""
+    out = {"asof": now.isoformat(), "assets": {}}
+    for a in ("BTC", "Gold"):
+        m = f.macro.get(a) or {}
+        out["assets"][a] = {"price": (f.asset(a) or {}).get("price"),
+                            "scores": {b: (m.get(b) or {}).get("score") for b, _ in asset_report.HORIZONS}}
+    return out
+
+
 def _send_report(f, now: pd.Timestamp, trigger: str | None, names: dict, dry_run: bool, root: Path,
-                 weekly: bool) -> None:
+                 weekly: bool, state: Path | None = None, changes: bool = False) -> None:
     # one overview (shared context), one self-contained report per asset, the full indicator tables, a glossary
     chains = {}
     for a in ("BTC", "Gold"):
         chains[a], source = writer.explain_asset(f, a, asset_report.chain_sentences(f, a, now))
         print(f"causal chain {a}: {source}")
+    current = snapshot_scores(f, now)
+    block = asset_report.changes_block(_state_json(state, "last_scores.json"), current) if changes else []
     for kind, text in asset_report.report_messages(f, now, chains, trigger, names, weekly=weekly):
+        if kind == "overview" and block:
+            head, _, rest = text.partition("\n\n")
+            text = head + "\n\n" + "\n".join(block) + "\n\n" + rest
         _send(text, kind, dry_run, root)
+    _save_state(state, "last_scores.json", current)
 
 
-def run(mode: str, root: Path, state: Path | None, now: pd.Timestamp, trigger: str | None, dry_run: bool) -> int:
+def wait_for_daily_slot(now: pd.Timestamp, sleep=time.sleep) -> None:
+    """The data is refreshed shortly before 09:00 Tehran; the report itself goes out at 09:00."""
+    left = (scheduler.daily_target(now) - now).total_seconds()
+    if 0 < left <= 45 * 60:
+        print(f"daily report: waiting {int(left)} s for 09:00 Tehran", flush=True)
+        sleep(left)
+
+
+def run(mode: str, root: Path, state: Path | None, now: pd.Timestamp, trigger: str | None, dry_run: bool,
+        events: list[str] | None = None, changes: bool = False) -> int:
     f = facts_mod.load(root)
     names = (dict(zip(f.calendar["name_en"], f.calendar["name_fa"]))
              if not f.calendar.empty and {"name_en", "name_fa"} <= set(f.calendar.columns) else {})
@@ -103,15 +131,26 @@ def run(mode: str, root: Path, state: Path | None, now: pd.Timestamp, trigger: s
             print(f"daily report for {today} already sent")
             return 0
         if not gate(root, state, now, "گزارش روزانه", dry_run):
-            return 0  # not marked as sent: a later retry slot tries again
-        _send_report(f, now, trigger or "گزارش روزانه", names, dry_run, root, weekly=False)
+            return 0  # not marked as sent: a later run tries again
+        if not dry_run:
+            wait_for_daily_slot(now)
+            now = pd.Timestamp.now(tz="UTC")
+        _send_report(f, now, trigger or "گزارش روزانه", names, dry_run, root, weekly=False, state=state)
         _save_state(state, "daily_sent.json", {"date": today})
         return 0
     if mode in ("report", "weekly"):
         context = "گزارش هفتگی" if mode == "weekly" else "گزارش اثر"
         if not gate(root, state, now, context, dry_run):
             return 0
-        _send_report(f, now, trigger, names, dry_run, root, weekly=mode == "weekly")
+        _send_report(f, now, trigger, names, dry_run, root, weekly=mode == "weekly", state=state, changes=changes)
+        return 0
+    if mode == "prealert":
+        evs = [scheduler.event_from_id(i) for i in events or []]
+        msg = messages.prerelease(f, now, [{**e, "scheduled_utc": pd.Timestamp(e["scheduled_utc"])} for e in evs])
+        if msg is None:
+            print("prealert: no events given")
+            return 0
+        _send(msg, "prealert", dry_run, root)
         return 0
     if mode == "headsup":
         tomorrow = str((now.tz_convert("Asia/Tehran") + pd.Timedelta(days=1)).date())
@@ -163,7 +202,9 @@ def run(mode: str, root: Path, state: Path | None, now: pd.Timestamp, trigger: s
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["report", "daily", "weekly", "headsup", "news", "health", "prepos"])
+    ap.add_argument("mode", choices=["report", "daily", "weekly", "headsup", "news", "health", "prepos", "prealert"])
+    ap.add_argument("--events", default="", help="comma-separated event ids (prealert)")
+    ap.add_argument("--changes", action="store_true", help="report: add what changed since the last report")
     ap.add_argument("--root", default="output")
     ap.add_argument("--state")
     ap.add_argument("--trigger", help="why this report runs (shown in the message)")
@@ -171,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     try:
         return run(args.mode, Path(args.root), Path(args.state) if args.state else None, pd.Timestamp.now(tz="UTC"),
-                   args.trigger, args.dry_run)
+                   args.trigger, args.dry_run, [x for x in args.events.split(",") if x], args.changes)
     except telegram.TelegramError as e:
         print(f"::error::{e}")
         return 1

@@ -294,23 +294,95 @@ def test_notify_report_weekly_headsup_dry_run(root, tmp_path):
     assert "خلاصه‌ی هفتگی" in (root / "messages" / "overview.html").read_text(encoding="utf-8")
 
 
-def test_daily_report_once_per_tehran_day_with_retry_slots(root, tmp_path):
+def _daily_done(state, now=NOW):
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "daily_sent.json").write_text(json.dumps({"date": scheduler.tehran_date(now)}))
+
+
+def test_daily_report_at_0900_tehran_once_per_day(root, tmp_path):
     state = tmp_path / "state"
     report = ["glossary", "overview", "report_btc", "report_gold", "table_btc", "table_gold"]
-    assert all(scheduler.mode_for(c) == "headsup" for c in [scheduler.HEADSUP, *scheduler.DAILY_RETRY])
-    assert scheduler.plan(scheduler.HEADSUP, NOW, state).mode == "headsup"
-    assert notify.run("daily", root, state, NOW, "به‌روزرسانی روزانه", dry_run=True) == 0
+    day = pd.Timestamp("2026-10-03 00:00", tz="UTC")  # 03:30 Tehran
+    assert scheduler.daily_target(day) == pd.Timestamp("2026-10-03 05:30", tz="UTC")  # 09:00 Tehran
+    none = lambda: []  # noqa: E731
+    # before 04:00 Tehran nothing is due; from then on any cron that fires takes it and waits until ~08:35
+    assert scheduler.plan(scheduler.INTRADAY, day, state, calendar_fn=none).mode == "intraday"
+    p = scheduler.plan(scheduler.DAILY, day + pd.Timedelta(hours=1), state, calendar_fn=none)
+    assert p.mode == "daily" and p.wait_until == "2026-10-03T05:05:00+00:00" and p.trigger == "گزارش روزانه"
+    scheduler.claim(state, p, day + pd.Timedelta(hours=1))
+    assert scheduler.plan(scheduler.INTRADAY, day + pd.Timedelta(hours=2), state, calendar_fn=none).mode == "intraday"
+    # a run that starts late sends at once; a dead claim stops blocking after CLAIM_TTL
+    late = day + pd.Timedelta(hours=8)
+    p = scheduler.plan(scheduler.PREPOS, late, state, calendar_fn=none)
+    assert p.mode == "daily" and p.wait_until == late.isoformat()
+    _daily_done(state, late)
+    assert scheduler.plan(scheduler.DAILY, late, state, calendar_fn=none).mode == "none"
+    sent_state = tmp_path / "s2"  # the report itself (fixture data is from NOW)
+    assert notify.run("daily", root, sent_state, NOW, "گزارش روزانه", dry_run=True) == 0
     sent = sorted(p.name.split("-", 2)[-1].removesuffix(".html") for p in telegram.OUTBOX.iterdir())
     assert sent == sorted(report)
-    assert "به‌روزرسانی روزانه" in (root / "messages" / "overview.html").read_text(encoding="utf-8")
-    # the same Tehran day: a retry slot plans nothing, a manual run still refreshes but does not re-send
-    later = NOW + pd.Timedelta(hours=2)
-    assert scheduler.plan(scheduler.DAILY_RETRY[0], later, state).mode == "none"
-    assert scheduler.plan(None, later, state, "headsup").mode == "headsup"
-    notify.run("daily", root, state, later, None, dry_run=True)
+    notify.run("daily", root, sent_state, NOW, None, dry_run=True)  # same day → not re-sent
     assert len(list(telegram.OUTBOX.iterdir())) == len(report)
-    # the next day it goes out again
-    assert scheduler.plan(scheduler.HEADSUP, NOW + pd.Timedelta(days=1), state).mode == "headsup"
+    assert scheduler.plan(scheduler.DAILY, day + pd.Timedelta(days=1, hours=1), state, calendar_fn=none).mode == "daily"
+
+
+def test_daily_report_waits_for_0900(monkeypatch):
+    slept = []
+    notify.wait_for_daily_slot(pd.Timestamp("2026-10-03 05:10", tz="UTC"), sleep=slept.append)
+    notify.wait_for_daily_slot(pd.Timestamp("2026-10-03 06:10", tz="UTC"), sleep=slept.append)  # late: no wait
+    assert slept == [20 * 60]
+
+
+def test_watch_plans_prealert_then_release_and_claims(tmp_path):
+    _daily_done(tmp_path)
+    ev = [{"event_id": "nfp-2026-09-29", "release_id": "nfp", "name_fa": "NFP", "importance": 5,
+           "scheduled_utc": NOW + pd.Timedelta(hours=3)},
+          {"event_id": "claims-2026-09-29", "release_id": "claims", "name_fa": "Claims", "importance": 3,
+           "scheduled_utc": NOW + pd.Timedelta(hours=1)}]
+    p = scheduler.plan(scheduler.INTRADAY, NOW, tmp_path, calendar_fn=lambda: ev)
+    assert p.mode == "watch" and [e["event_id"] for e in p.events] == ["nfp-2026-09-29"]
+    assert p.wait_until == (NOW + pd.Timedelta(hours=2)).isoformat()  # 1 h before the release
+    scheduler.claim(tmp_path, p, NOW)
+    # a later run neither watches it again nor reports it again (the watch run reports it itself)
+    assert scheduler.plan(scheduler.INTRADAY, NOW + pd.Timedelta(minutes=30), tmp_path, calendar_fn=lambda: ev).mode == "intraday"
+    assert scheduler.plan(scheduler.RELEASE[0], NOW + pd.Timedelta(hours=3, minutes=10), tmp_path,
+                          calendar_fn=lambda: ev).mode == "none"
+    far = [{**ev[0], "event_id": "nfp-x", "scheduled_utc": NOW + pd.Timedelta(hours=6)}]
+    assert scheduler.plan(scheduler.INTRADAY, NOW, tmp_path, calendar_fn=lambda: far).mode == "intraday"
+
+
+def test_calendar_failure_still_plans_the_daily_report(tmp_path):
+    def broken():
+        raise RuntimeError("FRED down")
+    assert scheduler.plan(scheduler.INTRADAY, pd.Timestamp("2026-10-03 02:00", tz="UTC"), tmp_path,
+                          calendar_fn=broken).mode == "daily"
+
+
+def test_prerelease_alert_and_changes_block(root, tmp_path):
+    f = facts_mod.load(root)
+    ev = [{**scheduler.event_from_id("cpi-2026-10-15")}]
+    t = pd.Timestamp(ev[0]["scheduled_utc"])
+    msg = plain(messages.prerelease(f, t - pd.Timedelta(minutes=60), [{**ev[0], "scheduled_utc": t}]) or "")
+    assert "هشدار پیش از انتشار" in msg and "پیشخور" in msg and "۶۰ دقیقه" in msg and "CPI" in msg
+    assert "بالاتر از انتظار" in msg and "بعد از انتشار" in msg
+    prev = {"asof": "2026-09-29T05:30:00+00:00",
+            "assets": {"BTC": {"price": 80000.0, "scores": {"short": 0.0, "medium": -20.0}},
+                       "Gold": {"price": 4000.0, "scores": {"short": 1.0, "medium": 2.0}}}}
+    cur = {"asof": "x", "assets": {"BTC": {"price": 84000.0, "scores": {"short": 1.0, "medium": 6.0}},
+                                   "Gold": {"price": 4000.0, "scores": {"short": 2.0, "medium": 3.0}}}}
+    txt = plain("\n".join(asset_report.changes_block(prev, cur)))
+    assert "چه تغییر کرد" in txt and "+5.0" in txt and "از نزولی" in txt and "امتیاز کلان تغییر مهمی نکرد" in txt
+    assert "در دسترس نیست" in plain("\n".join(asset_report.changes_block({}, cur)))
+
+
+def test_release_report_carries_changes_and_saves_scores(root, tmp_path):
+    state = tmp_path / "state"
+    notify.run("daily", root, state, NOW, None, dry_run=True)
+    assert (state / "last_scores.json").exists()
+    notify.run("report", root, state, NOW, "انتشار CPI", dry_run=True, changes=True)
+    assert "چه تغییر کرد" in (root / "messages" / "overview.html").read_text(encoding="utf-8")
+    notify.run("prealert", root, state, NOW, None, dry_run=True, events=["cpi-2026-10-15"])
+    assert (root / "messages" / "prealert.html").exists()
 
 
 def test_notify_sends_health_warning_instead_of_report(root, tmp_path):
@@ -345,9 +417,9 @@ def workflow_crons() -> list[str]:
 
 def test_workflow_crons_match_the_scheduler():
     crons = workflow_crons()
-    assert set(crons) == {scheduler.INTRADAY, scheduler.HEADSUP, *scheduler.DAILY_RETRY, scheduler.WEEKLY,
+    assert set(crons) == {scheduler.INTRADAY, scheduler.DAILY, scheduler.WEEKLY,
                           scheduler.PREPOS, *scheduler.RELEASE}
-    assert {scheduler.mode_for(c) for c in crons} == {"intraday", "headsup", "weekly", "prepos", "release"}
+    assert {scheduler.mode_for(c) for c in crons} == {"intraday", "daily", "weekly", "prepos", "release"}
 
 
 def _cron_times(cron: str) -> set[tuple[int, int]]:
@@ -367,14 +439,15 @@ def test_release_crons_cover_every_release_time_in_both_dst_offsets():
 
 
 def test_plan_release_window_and_dedupe(tmp_path):
-    ev = [{"event_id": "cpi-2026-09-29", "release_id": "cpi", "name_fa": "CPI", "scheduled_utc": NOW - pd.Timedelta(minutes=5)},
-          {"event_id": "jolts-2026-09-29", "release_id": "jolts", "name_fa": "JOLTS", "scheduled_utc": NOW + pd.Timedelta(minutes=90)},
-          {"event_id": "ppi-2026-09-29", "release_id": "ppi", "name_fa": "PPI", "scheduled_utc": NOW - pd.Timedelta(hours=3)}]
+    _daily_done(tmp_path)
+    ev = [{"event_id": "cpi-2026-09-29", "release_id": "cpi", "name_fa": "CPI", "importance": 5, "scheduled_utc": NOW - pd.Timedelta(minutes=5)},
+          {"event_id": "claims-2026-09-29", "release_id": "claims", "name_fa": "Claims", "importance": 3, "scheduled_utc": NOW - pd.Timedelta(minutes=5)},
+          {"event_id": "ppi-2026-09-29", "release_id": "ppi", "name_fa": "PPI", "importance": 4, "scheduled_utc": NOW - pd.Timedelta(hours=7)}]
     p = scheduler.plan(scheduler.RELEASE[0], NOW, tmp_path, calendar_fn=lambda: ev)
     assert p.mode == "release" and [e["event_id"] for e in p.events] == ["cpi-2026-09-29"] and "CPI" in p.trigger
     scheduler.mark(tmp_path, ["cpi-2026-09-29"])
     assert scheduler.plan(scheduler.RELEASE[0], NOW, tmp_path, calendar_fn=lambda: ev).mode == "none"
-    assert scheduler.plan(scheduler.INTRADAY, NOW, tmp_path).mode == "intraday"
+    assert scheduler.plan(scheduler.INTRADAY, NOW, tmp_path, calendar_fn=lambda: []).mode == "intraday"
     assert scheduler.plan("", NOW, tmp_path, mode="weekly").mode == "weekly"
     assert scheduler.plan("1 2 3 4 5", NOW, tmp_path).mode == "none"
 
@@ -452,9 +525,10 @@ def test_claude_client_request_and_parsing(monkeypatch):
 # ── pre-positioning: plan, alert, notify ─────────────────────────────────
 
 def test_prepos_plan_only_runs_when_a_target_release_is_near(tmp_path):
+    _daily_done(tmp_path)
     cpi = [{"event_id": "cpi-x", "release_id": "cpi", "scheduled_utc": NOW + pd.Timedelta(hours=30)}]
     far = [{"event_id": "cpi-y", "release_id": "cpi", "scheduled_utc": NOW + pd.Timedelta(hours=80)},
-           {"event_id": "claims-z", "release_id": "claims", "scheduled_utc": NOW + pd.Timedelta(hours=5)}]
+           {"event_id": "claims-z", "release_id": "claims", "importance": 3, "scheduled_utc": NOW + pd.Timedelta(hours=5)}]
     p = scheduler.plan(scheduler.PREPOS, NOW, tmp_path, calendar_fn=lambda: cpi)
     assert p.mode == "prepos" and [e["event_id"] for e in p.events] == ["cpi-x"]
     assert scheduler.plan(scheduler.PREPOS, NOW, tmp_path, calendar_fn=lambda: far).mode == "none"

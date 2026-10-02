@@ -124,8 +124,8 @@ If any check fails, a health warning is sent instead of the report. The same war
 | cron (UTC) | mode | what happens |
 |---|---|---|
 | every 15 min | intraday | news scan → Claude classification → alerts for importance ≥ 4; importance 5 triggers a full report |
-| daily 14:40 (18:10 Tehran), retries 15:40 / 16:40 / 17:40 | headsup | full pipeline refresh → daily report (once per Tehran day; the retry slots run only if it has not gone out, since GitHub skips scheduled runs under load) + heads-up for tomorrow's releases (Tehran date) + health check |
-| 5 min after each release time, for both US DST offsets | release | only if a tracked release happened in the last 100 min and was not reported: wait until FRED shows the new value (≤ 2 h) → full pipeline → impact report + signals |
+| any run (crons are only chances to start; GitHub often starts them late) | daily / watch / release | **daily**: the 09:00 Tehran report — a run that starts up to 5 h early waits, refreshes the data and sends at 09:00 sharp, a late run sends at once. **watch**: an important release (★4+) ≤ 4.5 h away → pre-release alert 1 h before it (expected value, what a surprise would mean, front-running warning) → wait → **release**: the report with what changed since the last report. Claims in the state cache stop duplicates |
+| 5 min after each release time, for both US DST offsets | release | only if an important release happened in the last 6 h and was not reported: wait until FRED shows the new value (≤ 2 h) → full pipeline → impact report + signals |
 | Saturday 03:20 (06:50 Tehran) | weekly | full pipeline (coefficients and backtests recomputed) → weekly summary |
 | hourly at :50 | prepos | only while CPI/PCE/NFP/FOMC is ≤ 72 h away: live pre-positioning check (model from the last full run) → alert if that release/asset has a proven out-of-sample edge |
 

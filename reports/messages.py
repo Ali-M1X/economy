@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from core.fa import fa, label, ltr, word
-from core.jalali import jdate, jdatetime_fa
+from core.jalali import fa_digits, jdate, jdatetime_fa
 from core.timeutil import TEHRAN
 from notify.telegram import esc
 from reports.facts import MEASURE_FA, Facts, channel_fa, indicators_cfg, ind_name, releases_cfg
@@ -90,42 +90,70 @@ def events_on(f: Facts, day_tehran) -> pd.DataFrame:
     return d[d["local"].dt.date == day_tehran].drop_duplicates("event_id").sort_values("scheduled_utc")
 
 
+def _event_block(f: Facts, e, pre: list[dict]) -> list[str]:
+    """Name, time, previous value, effect channel, what a surprise would mean per asset, front-running read."""
+    rel = releases_cfg()
+    rcfg = {r["key"]: r for r in indicators_cfg()["releases"]}
+    r = rel.get(e.release_id, {})
+    L = ["", f"<b>{esc(r.get('name_fa', e.release_id))}</b> {'★' * int(r.get('importance', 1))}",
+         f"⏰ زمان: {tehran(e.scheduled_utc)} (به وقت تهران)",
+         "📊 پیش‌بینی (اجماع): منبع رایگان ندارد — به‌جای آن «انتظار» سیستم = میانگین ۳ دوره قبل"]
+    for key in r.get("series_keys", [])[:2]:
+        cfg = rcfg.get(key)
+        measure = cfg["measure"] if cfg else "level"
+        pv = prev_measure(f, key, measure)
+        if pv:
+            L.append(f"↩️ قبلی {esc(ind_name(key))}: {num(pv[0])} ({esc(MEASURE_FA.get(measure, measure))})")
+        if not cfg:
+            continue
+        L.append(f"🔗 کانال اثر: {chain(cfg.get('channels', []))}")
+        for a in ("BTC", "Gold"):
+            c = f.coef(key, a, "24h") or {}
+            k = c.get("coefficient")
+            theory = cfg.get("theory", {}).get(a, 0)
+            hot = direction_fa(k) if k is not None else ("صعودی 🟢" if theory > 0 else "نزولی 🔴" if theory < 0 else "نامشخص")
+            cold = direction_fa(-k) if k is not None else ("نزولی 🔴" if theory > 0 else "صعودی 🟢" if theory < 0 else "نامشخص")
+            basis = (f"ضریب اثر ۲۴ ساعته {num(k, '{:.1f}', sign=True)} از ±۱۰" if k is not None
+                     else "بر اساس نظریه؛ ضریب تاریخی ندارد")
+            L.append(f"   • {ASSET_FA[a]}: بالاتر از انتظار ← {hot}؛ پایین‌تر ← {cold} ({basis})")
+    line = prepos_line(pre, e.event_id)
+    if line:
+        L.append(line)
+    return L
+
+
 def headsup(f: Facts, now: pd.Timestamp) -> str | None:
     tomorrow = (now.tz_convert(TEHRAN) + pd.Timedelta(days=1)).date()
     ev = events_on(f, tomorrow)
     if ev.empty:
         return None
-    rel = releases_cfg()
-    rcfg = {r["key"]: r for r in indicators_cfg()["releases"]}
     pre = f.prepos.get("live", []) if getattr(f, "prepos", None) else []
     L = [f"📅 <b>هشدار یک روز قبل — انتشارهای فردا ({jdate(str(tomorrow))})</b>"]
     for e in ev.itertuples():
-        r = rel.get(e.release_id, {})
-        L += ["", f"<b>{esc(r.get('name_fa', e.release_id))}</b> {'★' * int(r.get('importance', 1))}",
-              f"⏰ زمان: {tehran(e.scheduled_utc)} (به وقت تهران)",
-              "📊 پیش‌بینی (اجماع): منبع رایگان ندارد — به‌جای آن «انتظار» سیستم = میانگین ۳ دوره قبل"]
-        for key in r.get("series_keys", [])[:2]:
-            cfg = rcfg.get(key)
-            measure = cfg["measure"] if cfg else "level"
-            pv = prev_measure(f, key, measure)
-            if pv:
-                L.append(f"↩️ قبلی {esc(ind_name(key))}: {num(pv[0])} ({esc(MEASURE_FA.get(measure, measure))})")
-            if not cfg:
-                continue
-            L.append(f"🔗 کانال اثر: {chain(cfg.get('channels', []))}")
-            for a in ("BTC", "Gold"):
-                c = f.coef(key, a, "24h") or {}
-                k = c.get("coefficient")
-                theory = cfg.get("theory", {}).get(a, 0)
-                hot = direction_fa(k) if k is not None else ("صعودی 🟢" if theory > 0 else "نزولی 🔴" if theory < 0 else "نامشخص")
-                cold = direction_fa(-k) if k is not None else ("نزولی 🔴" if theory > 0 else "صعودی 🟢" if theory < 0 else "نامشخص")
-                basis = (f"ضریب اثر ۲۴ ساعته {num(k, '{:.1f}', sign=True)} از ±۱۰" if k is not None
-                         else "بر اساس نظریه؛ ضریب تاریخی ندارد")
-                L.append(f"   • {ASSET_FA[a]}: بالاتر از انتظار ← {hot}؛ پایین‌تر ← {cold} ({basis})")
-        line = prepos_line(pre, e.event_id)
-        if line:
-            L.append(line)
+        L += _event_block(f, e, pre)
     L.append("\n«انتظار» = میانگین ۳ دوره قبل (اجماع تحلیلگران رایگان در دسترس نیست). ضریب‌ها همبستگی تاریخی‌اند، نه پیش‌بینی.")
+    return "\n".join(L) + footer()
+
+
+def prerelease(f: Facts, now: pd.Timestamp, events: list[dict]) -> str | None:
+    """Alert shortly before an important release: what is expected, what a surprise would mean, and the reminder that
+    the market can price the release in (front-run it) beforehand — with the system's pre-positioning read."""
+    if not events:
+        return None
+    from types import SimpleNamespace
+
+    pre = f.prepos.get("live", []) if getattr(f, "prepos", None) else []
+    t = pd.Timestamp(events[0]["scheduled_utc"])
+    mins = max(0, int(round((t - now).total_seconds() / 60)))
+    names = "، ".join(esc(e.get("name_fa") or e["release_id"]) for e in events)
+    L = [f"⏰ <b>هشدار پیش از انتشار — {names}</b>",
+         f"حدود {fa_digits(str(mins))} دقیقه‌ی دیگر منتشر می‌شود ({tehran(t)}).",
+         "⚠️ بازار ممکن است پیش از انتشار جهت را «پیشخور» کند؛ حرکت تند در این فاصله لزوماً ادامه‌دار نیست."]
+    for e in events:
+        L += _event_block(f, SimpleNamespace(**{**e, "scheduled_utc": t}), pre)
+    if not any(r.get("status") == "signal" for r in pre if r["event_id"] in {e["event_id"] for e in events}):
+        L.append("\nهیچ قاعده‌ی پیش‌موقعیت‌گیری برای این انتشار برتری اثبات‌شده ندارد؛ موقعیتی پیشنهاد نمی‌شود.")
+    L.append("بعد از انتشار، گزارش کامل با تغییرات فرستاده می‌شود.")
     return "\n".join(L) + footer()
 
 

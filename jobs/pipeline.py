@@ -1,6 +1,6 @@
 """The full pipeline as one command — the VPS equivalent of the data-availability workflow.
 
-    python -m jobs.pipeline --mode report|release|weekly|headsup|none [--events ids] [--trigger text]
+    python -m jobs.pipeline --mode report|release|weekly|daily|none [--events ids] [--trigger text]
                             [--runs-dir /data/runs --state /data/state]
 
 With --runs-dir every run writes into its own folder (runs/<UTC timestamp>/) and, when the analysis succeeded, the
@@ -41,14 +41,10 @@ def steps(mode: str, events: str, trigger: str, out: Path, state: Path) -> list[
           ("pre-positioning", py + ["jobs.prepos", "--from-cache", cache, "--archive", str(state.parent / "archive"),
                                     "--state", str(state)], False),
           ("health", py + ["jobs.health", "--root", str(out)], False)]
-    notify = {"release": ["report", "--trigger", trigger], "report": ["report", "--trigger", trigger],
-              "weekly": ["weekly"], "headsup": ["headsup"]}.get(mode)
+    notify = {"release": ["report", "--trigger", trigger, "--changes"], "report": ["report", "--trigger", trigger],
+              "weekly": ["weekly"], "daily": ["daily", "--trigger", trigger]}.get(mode)
     if notify:
         s.append(("telegram", py + ["jobs.notify", *notify, "--root", str(out), "--state", str(state)], False))
-    if mode == "headsup":
-        s.insert(len(s) - 1, ("daily report", py + ["jobs.notify", "daily", "--trigger", trigger, "--root", str(out),
-                                                     "--state", str(state)], False))
-        s.append(("health warning", py + ["jobs.notify", "health", "--root", str(out), "--state", str(state)], False))
     if mode == "release" and events:
         s.append(("mark reported", py + ["jobs.scheduler", "mark", "--events", events, "--state", str(state)], False))
     return s
@@ -86,7 +82,7 @@ def run(mode: str, events: str = "", trigger: str = "", runs: Path | None = None
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", default="none", choices=["none", "report", "release", "weekly", "headsup"])
+    ap.add_argument("--mode", default="none", choices=["none", "report", "release", "weekly", "daily"])
     ap.add_argument("--events", default="")
     ap.add_argument("--trigger", default="")
     ap.add_argument("--runs-dir")

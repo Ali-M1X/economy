@@ -1,26 +1,18 @@
 name: schedule
-# All scheduled work. `jobs.scheduler plan` maps the cron that fired to a mode (the cron strings below must match
-# jobs/scheduler.py — a test checks this):
-#   */15 min         intraday  news scan → Claude classification → alerts (importance ≥ 4); importance 5 → full report
-#   daily 14:40 UTC  headsup   full refresh + daily report + heads-up for releases scheduled tomorrow (Tehran) +
-#                              health check; 15:40/16:40/17:40 retry only if today's report has not gone out
-#                              (GitHub skips scheduled runs under load)
-#   release crons    release   only if a tracked release happened in the last 100 min and was not reported yet:
-#                              wait for the new value (≤ 2 h) → full pipeline → impact report + signals
-#   Sat 03:20 UTC    weekly    full refresh, coefficients and backtests recomputed → weekly summary
-#   hourly :50       prepos    only while CPI/PCE/NFP/FOMC is ≤ 72 h away: live pre-positioning check on the latest
-#                              snapshot (model from the last full run) → alert if the release/asset has a proven edge
-#
-# GitHub Actions limits: cron is UTC only (release crons cover both US DST offsets), runs can start several minutes
-# late or be skipped under load, the shortest interval is 5 min, and scheduled workflows run only from the default
-# branch and are disabled after 60 days without repository activity. docker-compose runs the same schedule on a VPS.
+# All scheduled work. GitHub starts scheduled runs late (often by an hour or more) or skips them, so every run asks
+# `jobs.scheduler plan` what is due now, whichever cron fired (the cron strings below must match jobs/scheduler.py —
+# a test checks this):
+#   release   an important release (★4+) came out in the last 6 h and was not reported → wait for the new value
+#             (≤ 2 h) → full pipeline → report with what changed since the last report
+#   daily     the 09:00 Tehran report has not gone out → wait (a run may start up to 5 h early) → refresh → send at 09:00
+#   watch     an important release is ≤ 4.5 h away → wait → pre-release alert 1 h before → wait → release run
+#   otherwise the cron's own job: */15 intraday news alerts, Saturday weekly summary, hourly pre-positioning check
+# The 00:40–04:40 UTC crons only add chances for the 09:00 report to start in time. Scheduled workflows run only
+# from the default branch and are disabled after 60 days without repository activity.
 on:
   schedule:
     - cron: "*/15 * * * *"
-    - cron: "40 14 * * *"
-    - cron: "40 15 * * *"
-    - cron: "40 16 * * *"
-    - cron: "40 17 * * *"
+    - cron: "40 0,1,2,3,4 * * *"
     - cron: "20 3 * * 6"
     - cron: "50 * * * *"
     - cron: "35 12,13 * * 1-5"
@@ -31,7 +23,7 @@ on:
       mode:
         description: "what to run now"
         type: choice
-        options: [intraday, headsup, release, weekly, report, prepos]
+        options: [report, daily, release, intraday, weekly, prepos]
         default: report
 permissions: {contents: read}
 jobs:
@@ -42,6 +34,8 @@ jobs:
       mode: ${{ steps.plan.outputs.mode }}
       events: ${{ steps.plan.outputs.events }}
       trigger: ${{ steps.plan.outputs.trigger }}
+      wait_until: ${{ steps.plan.outputs.wait_until }}
+      release_at: ${{ steps.plan.outputs.release_at }}
     env:
       FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
       SCHEDULE: ${{ github.event.schedule }}
@@ -57,26 +51,82 @@ jobs:
             state/health_last.json
             state/headsup_sent.json
             state/daily_sent.json
+            state/daily_claim.json
+            state/watched.json
+            state/last_scores.json
             state/reported_events.json
             state/fed_docs_scored.csv
           key: mp-state-pipe-${{ github.run_id }}
           restore-keys: mp-state-pipe-
       - id: plan
+        # a scheduled plan also claims the work it took (daily / watched / reported), so later runs skip it
         run: python -m jobs.scheduler plan --schedule "$SCHEDULE" --mode "$MODE_INPUT" --state state
-      - name: Claim the release (a later cron in the window must not report it again)
-        if: steps.plan.outputs.mode == 'release'
-        env: {EVENTS: "${{ steps.plan.outputs.events }}"}
-        run: python -m jobs.scheduler mark --events "$EVENTS" --state state
-      - if: steps.plan.outputs.mode == 'release'
+      - if: contains(fromJSON('["release", "daily", "watch"]'), steps.plan.outputs.mode) && github.event_name == 'schedule'
         uses: actions/cache/save@v4
         with:
           path: |
             state/health_last.json
             state/headsup_sent.json
             state/daily_sent.json
+            state/daily_claim.json
+            state/watched.json
+            state/last_scores.json
             state/reported_events.json
             state/fed_docs_scored.csv
           key: mp-state-pipe-${{ github.run_id }}-plan
+
+  wait:
+    # daily: sleep until ~25 min before 09:00 Tehran (the report itself waits for 09:00 sharp)
+    # watch: sleep until 1 h before the release → pre-release alert → sleep until the release time
+    needs: plan
+    if: contains(fromJSON('["daily", "watch"]'), needs.plan.outputs.mode)
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    permissions: {contents: read, actions: read}
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      DASHBOARD_URL: ${{ vars.DASHBOARD_URL }}
+      MACRO_PULSE_OUTPUT_DIR: snap
+      WAIT_UNTIL: ${{ needs.plan.outputs.wait_until }}
+      RELEASE_AT: ${{ needs.plan.outputs.release_at }}
+      EVENTS: ${{ needs.plan.outputs.events }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r requirements.txt
+      - run: python -m jobs.scheduler sleep --until "$WAIT_UNTIL"
+      - name: Find the latest full pipeline run
+        if: needs.plan.outputs.mode == 'watch'
+        id: snap
+        env: {GH_TOKEN: "${{ github.token }}"}
+        run: |
+          RUN=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow data-availability.yml --status success \
+                --limit 1 --json databaseId -q '.[0].databaseId')
+          echo "run=$RUN" >> "$GITHUB_OUTPUT"
+      - if: needs.plan.outputs.mode == 'watch'
+        uses: actions/download-artifact@v4
+        with: {name: data-availability, path: snap, run-id: "${{ steps.snap.outputs.run }}", github-token: "${{ github.token }}"}
+      - if: needs.plan.outputs.mode == 'watch'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            state/zq_history.csv
+            state/book_history_BTC.csv
+            state/book_history_PAXG.csv
+          key: mp-state-prepos-${{ github.run_id }}
+          restore-keys: mp-state-prepos-
+      - name: Live pre-positioning read
+        if: needs.plan.outputs.mode == 'watch'
+        continue-on-error: true  # the alert goes out without it
+        run: python -m jobs.prepos --from-cache snap/cache --state state --refresh-live --live-only snap/prepos.json
+      - name: Pre-release alert (Telegram)
+        if: needs.plan.outputs.mode == 'watch'
+        continue-on-error: true  # the release report must still run
+        run: python -m jobs.notify prealert --root snap --events "$EVENTS"
+      - if: needs.plan.outputs.mode == 'watch'
+        run: python -m jobs.scheduler sleep --until "$RELEASE_AT"
 
   intraday:
     needs: plan
@@ -168,12 +218,14 @@ jobs:
           key: mp-state-prepos-${{ github.run_id }}-${{ github.run_attempt }}
 
   pipeline:
-    needs: plan
-    if: contains(fromJSON('["headsup", "release", "weekly", "report"]'), needs.plan.outputs.mode)
+    needs: [plan, wait]
+    if: >-
+      !cancelled() && (needs.wait.result == 'success' || needs.wait.result == 'skipped') &&
+      contains(fromJSON('["daily", "watch", "release", "weekly", "report"]'), needs.plan.outputs.mode)
     permissions: {contents: write}  # only the opt-in publish-snapshot job inside uses it
     uses: ./.github/workflows/data-availability.yml
     with:
-      mode: ${{ needs.plan.outputs.mode }}
+      mode: ${{ needs.plan.outputs.mode == 'watch' && 'release' || needs.plan.outputs.mode }}
       events: ${{ needs.plan.outputs.events }}
       trigger: ${{ needs.plan.outputs.trigger }}
     secrets: inherit

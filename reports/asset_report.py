@@ -769,6 +769,28 @@ def glossary_message() -> str:
     return "\n".join(["📖 <b>راهنمای اصطلاحات</b>", *[f"• <b>{t}</b>: {d}" for t, d in GLOSSARY]]) + "\n\n" + DISCLAIMER
 
 
+def changes_block(prev: dict, cur: dict) -> list[str]:
+    """After a release: price and macro-score changes per asset since the previous report (template, no new numbers)."""
+    if not prev or not prev.get("assets"):
+        return ["🔄 <b>چه تغییر کرد</b>", "گزارش قبلی برای مقایسه در دسترس نیست."]
+    L = [f"🔄 <b>چه تغییر کرد</b> (نسبت به گزارش {tehran(prev['asof'])})"]
+    for a in ("BTC", "Gold"):
+        p, c = prev["assets"].get(a) or {}, cur["assets"].get(a) or {}
+        parts = []
+        if p.get("price") and c.get("price"):
+            parts.append(f"قیمت {num((c['price'] / p['price'] - 1) * 100, '{:+.1f}')}٪")
+        moved = []
+        for b, h in HORIZONS[:2]:
+            s0, s1 = (p.get("scores") or {}).get(b), (c.get("scores") or {}).get(b)
+            if s0 is None or s1 is None:
+                continue
+            if score_direction(s0) != score_direction(s1) or abs(s1 - s0) >= 5:
+                moved.append(f"{h}: از {score_direction(s0)} ({nz(num(s0, '{:+.0f}'))}) به "
+                             f"{score_direction(s1)} ({nz(num(s1, '{:+.0f}'))})")
+        L.append(f"• {ICON[a]} {ASSET_FA[a]}: " + "، ".join(parts + (moved or ["امتیاز کلان تغییر مهمی نکرد"])))
+    return L
+
+
 def report_messages(f: Facts, now: pd.Timestamp, chains: dict[str, list[str]] | None = None, trigger: str | None = None,
                     names: dict | None = None, weekly: bool = False) -> list[tuple[str, str]]:
     """(kind, html) in sending order: overview, BTC, gold, full tables, glossary (with the disclaimer, once)."""
