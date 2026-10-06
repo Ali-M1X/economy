@@ -1,4 +1,4 @@
-"""15-minute job: scan news (Fed, BLS/BEA/Treasury, GDELT), classify new items with Claude, send alerts for
+"""15-minute job: alert on big Bitcoin / gold price moves (jobs.moves), scan news (Fed, BLS/BEA/Treasury, GDELT), classify new items with Claude, send alerts for
 importance ≥ 4 and ask the workflow for a full report when an item is market-moving (importance 5).
 
     python -m jobs.intraday --state state/
@@ -17,7 +17,7 @@ import pandas as pd
 
 from collectors import news
 from core.settings import OUTPUT_DIR
-from jobs import classify, notify
+from jobs import classify, moves, notify
 from llm import claude
 
 
@@ -28,6 +28,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
     state, root = (Path(args.state) if args.state else None), Path(args.root)
+    try:  # big price moves first: they need no API key
+        moves.run(state, pd.Timestamp.now(tz="UTC"), args.dry_run)
+    except Exception as exc:  # noqa: BLE001 — the news scan must still run
+        print(f"::warning::market-move check failed: {type(exc).__name__}: {str(exc)[:200]}")
     if not claude.available():
         print("ANTHROPIC_API_KEY not set — news cannot be classified, so no news alerts are sent")
         return 0

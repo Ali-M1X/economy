@@ -6,7 +6,7 @@ name: schedule
 #             (≤ 2 h) → full pipeline → report with what changed since the last report
 #   daily     the 09:00 Tehran report has not gone out → wait (a run may start up to 5 h early) → refresh → send at 09:00
 #   watch     an important release is ≤ 4.5 h away → wait → pre-release alert 1 h before → wait → release run
-#   otherwise the cron's own job: */15 intraday news alerts, Saturday weekly summary, hourly pre-positioning check
+#   otherwise the cron's own job: */15 intraday (big price-move alerts + news alerts), Saturday weekly summary, hourly pre-positioning check
 # The 00:40–04:40 UTC crons only add chances for the 09:00 report to start in time. Scheduled workflows run only
 # from the default branch and are disabled after 60 days without repository activity.
 on:
@@ -153,6 +153,7 @@ jobs:
           path: |
             state/news_scored.csv
             state/news_alerted.json
+            state/moves_alerted.json
           key: mp-state-news-${{ github.run_id }}
           restore-keys: mp-state-news-
       - id: scan
@@ -163,6 +164,7 @@ jobs:
           path: |
             state/news_scored.csv
             state/news_alerted.json
+            state/moves_alerted.json
           key: mp-state-news-${{ github.run_id }}-${{ github.run_attempt }}
 
   prepos:

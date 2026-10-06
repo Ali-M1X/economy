@@ -108,7 +108,11 @@ class Facts:
 
     def summary(self) -> dict:
         """Compact JSON-able view handed to Claude (and used to validate its numbers)."""
+        from jobs import moves
+
         cfg = indicators_cfg()
+        now = pd.Timestamp(self.as_of) if self.as_of else pd.Timestamp.now(tz="UTC")
+        now = now.tz_localize("UTC") if now.tzinfo is None else now
         rel_cfg = {r["key"]: r for r in cfg["releases"]}
         chan = channel_fa(cfg)
         out = {"as_of": self.as_of, "regime": self.state.get("regime"), "fed_stance": self.state.get("fed_stance"),
@@ -130,6 +134,7 @@ class Facts:
                                      for b in ("short", "medium", "long")},
                 "expected_range": x.get("expected_range"),
                 "signals": len(x.get("signals", [])), "watchlist": len(x.get("watchlist", [])),
+                "market_move": moves.snapshot_stats(self.root, a, now), "move_windows_days": [7, moves.BREAK_DAYS],
             }
         return out
 

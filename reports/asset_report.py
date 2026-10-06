@@ -16,8 +16,9 @@ import numpy as np
 import pandas as pd
 
 from core.fa import word
-from core.jalali import jdate, jdate_short
+from core.jalali import fa_digits, jdate, jdate_short
 from core.registry import load_registry
+from jobs import moves
 from notify.telegram import esc
 from reports.facts import Facts, channel_fa, ind_name, indicators_cfg, releases_cfg
 from reports.messages import ASSET_FA, DISCLAIMER, dashboard_link, num, signal_card, tehran
@@ -46,7 +47,7 @@ MEANING_FA = {"cpi": ("تورم داغ‌تر", "تورم آرام‌تر"), "co
               "jolts_openings": ("تقاضای نیروی کار قوی‌تر", "سرد شدن بازار کار"),
               "initial_claims": ("بازار کار ضعیف‌تر", "بازار کار قوی‌تر")}
 BASIS_CODE = {"mean3": "T", "mean4": "T", "prev": "P"}
-LRM, RLI, PDI = "\u200e", "\u2067", "\u2069"
+LRM, RLM, RLI, PDI = "\u200e", "\u200f", "\u2067", "\u2069"
 GLOSSARY_NOTE = "معنی اصطلاحات: پیام آخر همین گزارش."
 
 
@@ -137,6 +138,7 @@ class Row:
     effect: int        # current implied effect on the asset: +1 / −1 / 0
     conf: str          # high|medium|low|""
     x: float | None    # the move used for the effect (state or surprise z)
+    against: bool = False  # the coefficient's sign contradicts the economic prior (likely a recent, unstable link)
 
 
 def _series(f: Facts, key: str) -> pd.Series:
@@ -252,6 +254,19 @@ def _surprise(f: Facts, key: str) -> dict | None:
     return next((r for r in f.releases if r["indicator"] == key), None)
 
 
+def theory_sign(key: str, asset: str, section: str) -> int:
+    """The economic prior: +1 / −1 if a higher value should lift / weigh on the asset, 0 if unclear."""
+    for i in indicators_cfg()["releases" if section == "release" else "state"]:
+        if i["key"] == key:
+            return int((i.get("theory") or {}).get(asset, 0))
+    return 0
+
+
+def against_theory(key: str, asset: str, coef: float | None, section: str) -> bool:
+    th = theory_sign(key, asset, section)
+    return bool(coef is not None and th and abs(coef) >= 1 and np.sign(coef) != th)
+
+
 def indicator_rows(f: Facts, asset: str) -> list[Row]:
     cfg = indicators_cfg()
     rels = {r["key"]: r for r in cfg["releases"]}
@@ -277,7 +292,7 @@ def indicator_rows(f: Facts, asset: str) -> list[Row]:
         value, change = _value_change(f, key, rels.get(key), states.get(key), meta)
         ticker = SHORT.get(key) or (meta.source_id if meta else key).lstrip("^")[:5]
         rows.append(Row(key, ind_name(key), ticker, value, change, surprise, k, "w" if in_state else "d", eff,
-                        conf, x))
+                        conf, x, against_theory(key, asset, k, "state" if in_state else "release")))
     return sorted(rows, key=lambda r: -abs(r.coef) if r.coef is not None else 1)
 
 
@@ -399,15 +414,31 @@ def table_rows(f: Facts, rows: list[Row], now: pd.Timestamp) -> list[TableRow]:
                                       t.when.value if t.when is not None else 0, -abs(t.row.coef or 0)))
 
 
+def change_arrow(change: str) -> str:
+    """↑ / ↓ for the change vs the previous value (4 weeks back for daily market series), blank if flat or unknown."""
+    m = re.match(r"\s*([+\-−])?\$?([\d.,]+)", change or "")
+    if not m or not m.group(1) or not float(m.group(2).replace(",", "") or 0):
+        return " "
+    return "↑" if m.group(1) == "+" else "↓"
+
+
+def impact_cell(r: Row) -> str:
+    """'▲ متوسط' = pushing the price up now, with a medium historical effect; '؟' = against the economic prior."""
+    w = impact_word(r.coef)
+    if w in ("—", "ناچیز"):
+        return w
+    return f"{ {1: '▲', -1: '▼', 0: '·'}[r.effect]} {w}{'؟' if r.against else ''}"
+
+
 def indicator_table(trs: list[TableRow], now: pd.Timestamp) -> list[str]:
-    head = f"{'Name':<5} {'Value':>6} {'Impact':<7} Next"
+    head = f"{'Name':<5} {'Value':>7} {'Impact':<8} Next"
     body = []
     for t in trs:
         r = t.row
-        arrow = {1: " ▲", -1: " ▼", 0: ""}[r.effect] if impact_word(r.coef) not in ("—", "ناچیز") else ""
-        imp = impact_word(r.coef) + arrow
+        imp = impact_cell(r)
         when = jdate_short(t.when, now) if t.when is not None else "روزانه" if t.daily else "—"
-        body.append(f"{r.ticker[:5]:<5} {_compact(r.value):>6} {_rtl(imp)}{' ' * (7 - len(imp))} {_rtl(when)}")
+        val = _compact(r.value) + change_arrow(r.change)
+        body.append(f"{r.ticker[:5]:<5} {val:>7} {_rtl(imp)}{' ' * (8 - len(imp))} {_rtl(when)}")
     return _table(head, body)
 
 
@@ -416,7 +447,10 @@ def names_key(rows: list[Row]) -> str:
     return "\n".join(f"• {esc(r.ticker)}: {esc(r.name_fa)}{' (ماهانه)' if r.key in mom else ''}" for r in rows)
 
 
-TABLE_LEGEND = "اثر = قدرت اثر تاریخی بر همین دارایی، ▲▼ = جهت اثر فعلی · Next = به‌روزرسانی بعدی"
+TABLE_LEGEND = ("• Value = آخرین عدد شاخص؛ ↑↓ = بالاتر/پایین‌تر از دفعه‌ی قبل (برای بازده‌ها و بازارها: نسبت به ۴ هفته پیش)\n"
+                "• Impact = اثر همین الان این شاخص بر قیمت: ▲ به نفع افزایش، ▼ به نفع کاهش، · بی‌اثر؛ "
+                "کلمه = قدرت این اثر در گذشته (ضعیف، متوسط، قوی)؛ ؟ = برخلاف منطق اقتصادی، کم‌اعتبار\n"
+                "• Next = تاریخ انتشار بعدی")
 
 
 def tables_section(f: Facts, rows: list[Row], title: str, now: pd.Timestamp) -> str:
@@ -431,6 +465,11 @@ def _move_phrase(state: float) -> str:
     m = 2 * abs(state)  # the state is the 4-week change in σ, clipped to ±2 and halved
     size = "به‌طور غیرعادی" if m >= 2 else "بیش از حد معمول" if m >= 1.5 else "در حد معمول" if m >= 0.7 else "کمی"
     return f"{size} {verb}"
+
+
+def _move_size(state: float) -> str:
+    m = 2 * abs(state)
+    return "غیرعادی" if m >= 2 else "بیش از حد معمول" if m >= 1.5 else "در حد معمول" if m >= 0.7 else "کم"
 
 
 def val(v: float) -> str:
@@ -450,8 +489,10 @@ def chain_sentences(f: Facts, asset: str, now: pd.Timestamp) -> list[str]:
     for t in [t for t in med.get("top", []) if abs(t["contribution"]) >= 0.5][:3]:
         key, c = t["indicator"], t["contribution"]
         path = " و ".join(f"«{esc(ch.get(x, x))}»" for x in chans.get(key, [])[:2])
-        L.append(f"{esc(ind_name(key))} در ۴ هفته‌ی اخیر {_move_phrase(t['state'])} است"
-                 + (f" و از مسیر {path}" if path else "") + f" برای {name} {'مثبت' if c > 0 else 'منفی'} است.")
+        odd = against_theory(key, asset, t.get("coef"), "state")
+        L.append(f"{'افزایش' if t['state'] > 0 else 'کاهش'} {esc(ind_name(key))} در ۴ هفته‌ی اخیر ({_move_size(t['state'])})"
+                 + (f" از مسیر {path}" if path else "") + f" برای {name} {'مثبت' if c > 0 else 'منفی'} است"
+                 + ("؛ ؟ این رابطه‌ی آماری برخلاف منطق اقتصادی است، پس کم‌اعتبار." if odd else "."))
     if not L:
         L.append(f"هیچ شاخصی الان سهم محسوسی در امتیاز {name} ندارد؛ برآیند کلان نزدیک صفر است.")
     return L
@@ -604,13 +645,70 @@ def _events(f: Facts, asset: str, now: pd.Timestamp, trigger: str | None) -> lis
     return out
 
 
+EVENT_FA = {"BOS_UP": "شکست سقف قبلی (ادامه‌ی صعود)", "BOS_DN": "شکست کف قبلی (ادامه‌ی نزول)",
+            "CHOCH_UP": "برگشت روند به صعود", "CHOCH_DN": "برگشت روند به نزول"}
+
+
+def technical_line(tech: dict) -> tuple[str | None, int]:
+    """Daily trend, the last structure event and RSI extremes, from the technical analysis the signals already use."""
+    if not tech.get("trend"):
+        return None, 0
+    d = 1 if tech["trend"] == "up" else -1 if tech["trend"] == "down" else 0
+    parts = [f"روند روزانه {'صعودی' if d > 0 else 'نزولی' if d < 0 else 'خنثی'}"]
+    if tech.get("last_event") in EVENT_FA:
+        parts.append(f"آخرین اتفاق: {EVENT_FA[tech['last_event']]}")
+    rsi = tech.get("rsi")
+    if rsi is not None and (rsi >= 65 or rsi <= 35):
+        zone = ("اشباع خرید" if rsi >= 70 else "نزدیک اشباع خرید") if rsi >= 65 else \
+               ("اشباع فروش" if rsi <= 30 else "نزدیک اشباع فروش")
+        parts.append(f"RSI {num(rsi, '{:.0f}')} ({zone})")
+    return "• تکنیکال: " + "، ".join(parts), d
+
+
+def macro_line(m: dict, asset: str) -> str:
+    """The 4-week macro score and which indicators push it up and down (replaces the old one-factor 'reasoning')."""
+    med = m.get("medium") or {}
+    sc = med.get("score")
+    if sc is None:
+        return "• کلان ۴ هفته: داده‌ی کافی نیست"
+    tops = [t for t in med.get("top") or [] if abs(t["contribution"]) >= 1]
+
+    def names(ts):
+        return "، ".join(esc(ind_name(t["indicator"])) + ("؟" if against_theory(t["indicator"], asset, t.get("coef"), "state")
+                                                          else "") for t in ts[:3])
+    up, down = [t for t in tops if t["contribution"] > 0], [t for t in tops if t["contribution"] < 0]
+    L = f"• کلان ۴ هفته: <b>{score_direction(sc)}</b> ({nz(num(sc, '{:+.0f}'))} از ±۱۰۰)"
+    if up:
+        L += f" — به نفع افزایش: {names(up)}"
+    if down:
+        L += f"{' ·' if up else ' —'} به نفع کاهش: {names(down)}"
+    if not up and not down:
+        L += " — هیچ شاخصی الان فشار محسوسی نمی‌آورد"
+    return L
+
+
+def direction_line(tdir: int, med: float | None, short: float | None) -> str:
+    mdir = 0 if med is None or abs(med) < 5 else int(np.sign(med))
+    tw = {1: "صعودی", -1: "نزولی", 0: "نامشخص"}[tdir]
+    near = f"، ۲۴ ساعت (کلان) {score_direction(short)}" if short is not None else ""
+    if tdir and mdir == tdir:
+        verdict = "هر دو هم‌جهت‌اند"
+    elif tdir and mdir == -tdir:
+        verdict = "تکنیکال و کلان خلاف هم‌اند؛ احتیاط"
+    elif tdir:
+        verdict = "کلان جهت قیمت را تأیید نمی‌کند"
+    else:
+        verdict = "قیمت روند روشنی ندارد"
+    return (f"• جهت محتمل: کوتاه‌مدت (روند قیمت) <b>{tw}</b>{near}، ۴ هفته (کلان) <b>{score_direction(med)}</b> — "
+            f"{verdict}؛ اطمینان {score_confidence(med)}")
+
+
 def decision_summary(f: Facts, asset: str, now: pd.Timestamp, trigger: str | None = None) -> list[str]:
     """Trigger (release table for the releases that matter for this asset), impact, reasoning, likely direction and a
     position filled only by a signal that passed the out-of-sample edge gate. Template only (no Claude); every figure
     is a computed number or a rounding of one."""
     name = ASSET_FA[asset]
     x, m = f.asset(asset), f.macro.get(asset) or {}
-    ch = channel_fa(indicators_cfg())
     evs = _events(f, asset, now, trigger)
     rels = [e for e in evs if e["kind"] == "release"]
     relevant = [e for e in rels if e["k"] is not None and abs(e["k"]) >= 1][:3]
@@ -632,20 +730,21 @@ def decision_summary(f: Facts, asset: str, now: pd.Timestamp, trigger: str | Non
     if top:
         r, k = top["r"], top["k"]
         eff = "صعودی" if k * r["z"] > 0 else "نزولی"
-        L.append(f"• اثر بر {name}: {eff} — اثر تاریخی {impact_word(k)}")
-        path = " و ".join(f"«{esc(ch.get(c, c))}»" for c in top["channels"][:2])
-        L.append(f"• استدلال: {'از مسیر ' + path + '؛ ' if path else ''}عدد بالاتر در گذشته برای {name} "
-                 f"{'مثبت' if k > 0 else 'منفی'} بوده است.")
+        L.append(f"• اثر این انتشار بر {name}: {eff} — بر پایه‌ی واکنش قیمت در ۲۴ ساعت پس از انتشارهای گذشته "
+                 f"(اثر تاریخی {impact_word(k)})")
     elif not rels and news and news[0].get("effect") in ("bullish", "bearish"):
         L.append(f"• اثر بر {name}: {'صعودی' if news[0]['effect'] == 'bullish' else 'نزولی'} (طبقه‌بندی خودکار تیتر)")
-    else:
-        t = next((t for t in ((m.get("medium") or {}).get("top") or []) if abs(t["contribution"]) >= 0.5), None)
-        L.append(f"• استدلال: مهم‌ترین عامل ۴ هفته {esc(ind_name(t['indicator']))} است که برای {name} "
-                 f"{'مثبت' if t['contribution'] > 0 else 'منفی'} است." if t else
-                 f"• استدلال: هیچ شاخصی الان سهم محسوسی در امتیاز {name} ندارد.")
+    mv = moves.snapshot_stats(f.root, asset, now)
+    line = moves.move_line(mv)
+    if line:
+        L.append(line)
+    tech = ((x.get("technical") or {}).get("1d")) or {}
+    tline, tdir = technical_line(tech)
+    if tline:
+        L.append(tline)
+    L.append(macro_line(m, asset))
     sh, med = (m.get("short") or {}).get("score"), (m.get("medium") or {}).get("score")
-    near = f"۲۴ ساعت {score_direction(sh)}، " if sh is not None else ""
-    L.append(f"• جهت محتمل: {near}۴ هفته <b>{score_direction(med)}</b> — اطمینان {score_confidence(med)}")
+    L.append(direction_line(tdir, med, sh))
     sig = (x.get("signals") or [None])[0]
     pre = next((r for r in (f.prepos or {}).get("live", []) if r.get("asset") == asset and r.get("status") == "signal"
                 and r.get("entry") is not None), None)
@@ -675,7 +774,8 @@ def asset_message(f: Facts, asset: str, now: pd.Timestamp, chain: list[str] | No
     parts = [_block(decision_summary(f, asset, now, trigger)), "━━━━━━━━━━━━━━",
              f"{ICON[asset]} <b>گزارش {ASSET_FA[asset]}</b> — {tehran(now)}",
              _block(price_block(f, asset)), _block(scores_section(f, asset)),
-             _block(["🔗 <b>عوامل اصلی</b>", *[f"{i}. {s}" for i, s in enumerate((chain or chain_sentences(f, asset, now))[:3], 1)]]),
+             _block(["🔗 <b>عوامل اصلی (کلان، ۴ هفته)</b>",
+                     *[f"{RLM}{fa_digits(str(i))}. {s}" for i, s in enumerate((chain or chain_sentences(f, asset, now))[:3], 1)]]),
              tables_section(f, shown, title, now),
              _block(signals_section(f, asset, names) + prepos_section(f, asset)),
              _block(conclusion(f, asset, now)), GLOSSARY_NOTE]

@@ -676,7 +676,8 @@ def test_decision_summary_release_table_for_this_asset(root):
     assert "CPI" in table and "0.42%" in table and "▲" in table
     txt = _plain_text(summary)
     assert "• شاخص قیمت مصرف‌کننده (CPI): بالاتر از انتظار (روند) — تورم داغ‌تر (شگفتی متوسط) → برای بیت‌کوین نزولی" in txt
-    assert "• اثر بر بیت‌کوین: نزولی — اثر تاریخی متوسط" in txt and "طلا" not in txt
+    assert "• اثر این انتشار بر بیت‌کوین: نزولی — بر پایه‌ی واکنش قیمت" in txt and "(اثر تاریخی متوسط)" in txt
+    assert "طلا" not in txt
     # anti-hallucination: every number in the summary is one the system computed
     assert writer.unknown_numbers(_plain_text(summary), writer.asset_facts(f, "BTC")) == []
     # a release with a negligible historical effect gets no table, just one line
@@ -749,8 +750,10 @@ def test_asset_body_keeps_only_decision_relevant_lines(root):
         msg = asset_report.asset_message(f, asset, NOW)
         body = _plain_text(msg.split("━━━━━━━━━━━━━━", 1)[1])
         drivers = body.split("عوامل اصلی")[1].split("شاخص‌های مؤثر")[0]
-        numbered = re.findall(r"^\d\. ", drivers, re.M)
-        assert 1 <= len(numbered) <= 3 and not re.search(r"[0-9]", re.sub(r"^\d\. ", "", drivers, flags=re.M))
+        numbered = re.findall(r"^\u200f[۱-۹]\. (.)", drivers, re.M)
+        assert 1 <= len(numbered) <= 3 and not re.search(r"[0-9]", drivers)
+        # each driver opens with a Persian letter, so Telegram lays the line out right-to-left
+        assert all("\u0600" <= c <= "\u06ff" for c in numbered)
         assert body.count("🎯 سیگنال: فعلاً هیچ") == 1 or "🎯 سیگنال معاملاتی" in body
         concl = body.split("جمع‌بندی")[1].split("معنی اصطلاحات")[0]
         assert len([ln for ln in concl.strip().splitlines() if ln.strip()]) <= 3
