@@ -1,0 +1,30 @@
+name: advisor
+# Experimental advisory report (reports/advisor.py): the latest data told as a story, with the usual % effect on
+# Bitcoin and gold, 4-week scenarios and what to do. It reads the `snapshot-latest` release the pipeline publishes,
+# so it collects nothing itself and never touches the regular reports. Daily after the 09:00 Tehran report, or by hand.
+on:
+  schedule:
+    - cron: "15 6 * * *"   # 09:45 Tehran
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency: {group: advisor, cancel-in-progress: false}
+jobs:
+  advisor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r requirements.txt
+      - name: Download the latest data snapshot
+        env: {GH_TOKEN: "${{ github.token }}"}
+        run: |
+          gh release download snapshot-latest --repo "$GITHUB_REPOSITORY" --pattern snapshot.tar.gz
+          tar xzf snapshot.tar.gz
+          ls output
+      - name: Send the advisory report
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m jobs.advisor --root output
