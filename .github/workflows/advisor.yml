@@ -28,13 +28,17 @@ jobs:
           gh release download snapshot-latest --repo "$GITHUB_REPOSITORY" --pattern snapshot.tar.gz
           tar xzf snapshot.tar.gz
           ls output
-      - name: Probe GitHub Models (dry runs only)
+      - name: Probe the free writer endpoint (dry runs only)
         if: ${{ inputs.dry_run }}
         env: {GITHUB_TOKEN: "${{ github.token }}"}
-        run: python -m llm.github_models
+        run: python -m llm.free_writer
       - name: Send the advisory report
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GITHUB_TOKEN: ${{ github.token }}
+          # optional free key for fluent text (see llm/free_writer.py); without it the template text is sent
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
         run: python -m jobs.advisor --root output ${{ inputs.dry_run && '--dry-run' || '' }}

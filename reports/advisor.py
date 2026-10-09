@@ -346,7 +346,8 @@ def macro_story(f: Facts, now: pd.Timestamp) -> str:
     L = [f"📖 <b>تحلیل روایی ({TITLE_TAG}) — تصویر کلان</b>", f"{jdate(now)} · داده‌ها تا {tehran(f.as_of or now)}", "",
          "<b>داستان در چند جمله</b>", story_sentence(t)]
     evs = upcoming(f, now)
-    for s in (fed_sentence(f), rates_sentence(f, now), regime_sentence(f), asset_takeaways(f, t), decision_note(t, evs)):
+    L[-1] = " ".join(x for x in (story_sentence(t), fed_sentence(f), rates_sentence(f, now), regime_sentence(f)) if x)
+    for s in (asset_takeaways(f, t), decision_note(t, evs)):
         if s:
             L.append(s)
     if t["inf"]:
@@ -476,6 +477,66 @@ def macro_forces(f: Facts, asset: str) -> list[tuple[str, float, bool]]:
     return out
 
 
+def _week(name: str, mv: dict | None) -> str:
+    if not mv or mv.get("chg7d") is None:
+        return ""
+    w, d = mv["chg7d"], mv.get("chg24")
+    big = mv.get("atr_pct") and abs(w) >= 2 * mv["atr_pct"]
+    if w <= -1:
+        s = f"{name} هفته‌ی {'سختی' if big else 'نه‌چندان خوبی'} را پشت سر گذاشته و {num(-w, '{:.1f}')}٪ نسبت به هفته‌ی پیش پایین‌تر است"
+    elif w >= 1:
+        s = f"{name} هفته‌ی {'پرقدرتی' if big else 'خوبی'} داشته و {num(w, '{:.1f}')}٪ نسبت به هفته‌ی پیش بالاتر است"
+    else:
+        s = f"{name} این هفته تقریباً درجا زده ({pct(w)})"
+    if d is not None and mv.get("atr_pct"):
+        calm = abs(d) < mv["atr_pct"]
+        s += "؛ امروز اما آرام بوده" if calm and (d * w < 0 or abs(w) >= 1) else "؛ امروز هم حرکتش ادامه داشته" if not calm else ""
+    return s + ". "
+
+
+def analyst_read(name: str, asset: str, x: dict, mv: dict | None, drift: float, sg: float | None, sc: dict | None,
+                 r: float | None, s: float | None, ev: dict | None, odd: bool) -> str:
+    """One flowing paragraph in an analyst's voice: what happened, what it means, what decides the next move."""
+    t = x.get("technical") or {}
+    d1, h4 = t.get("1d") or {}, t.get("4h") or {}
+    a, b = _dir(d1.get("trend")), _dir(h4.get("trend"))
+    out = _week(name, mv)
+    if a > 0 and (b < 0 or h4.get("last_event") == "CHOCH_DN"):
+        out += "تصویر بزرگ هنوز صعودی است، ولی کوتاه‌مدت خریداران نفسشان گرفته و بازار در حال اصلاح است. "
+        if d1.get("last_event") in ("CHOCH_DN", "BOS_DN"):
+            out += "چیزی که مرا محتاط می‌کند این است که کف روزانه هم از دست رفته؛ این معمولاً اولین ترک در یک روند صعودی است. "
+    elif a < 0 and (b > 0 or h4.get("last_event") == "CHOCH_UP"):
+        out += ("روند اصلی هنوز نزولی است و جهش اخیر را فعلاً باید یک نفس‌گیری داخل همان روند دید، نه برگشت؛ "
+                "هرچند اولین نشانه‌های بهبود در نمودار کوتاه‌مدت دیده می‌شود. ")
+    elif a > 0:
+        out += "روند در همه‌ی بازه‌ها صعودی است و خریداران دست بالا را دارند. "
+    elif a < 0:
+        out += "روند در همه‌ی بازه‌ها نزولی است و فروشندگان دست بالا را دارند. "
+    else:
+        out += "بازار فعلاً جهت روشنی ندارد. "
+    if sg:
+        if abs(drift) >= 0.3 * sg:
+            out += f"کلان این بار حرف مهمی دارد و {'به نفع' if drift > 0 else 'علیه'} {name} است؛ نادیده‌گرفتنش اشتباه است. "
+        else:
+            out += (f"از طرف اقتصاد کلان هم کمک خاصی {'نمی‌رسد' if abs(drift) < 0.05 else 'نمی‌رسد؛ تمایل کمی ' + ('مثبت' if drift > 0 else 'منفی') + ' هست ولی'} "
+                    f"{'' if abs(drift) < 0.05 else 'در برابر نوسان عادی بازار ناچیز است'}").rstrip() + ". "
+            if odd:
+                out += "بخشی از همان اندک اثر مثبت هم از رابطه‌هایی می‌آید که منطق اقتصادی ندارند. "
+    if ev:
+        out += f"پس حرف اصلی را رفتار قیمت و {esc(ev['name'])} ({jdate(ev['when'], year=False)}) می‌زنند. "
+    if sc and r and s:
+        lean = sc["up"] - sc["down"]
+        if abs(lean) < 0.05:
+            out += (f"شانس بالا رفتن از {px(r, asset)} و شکستن {px(s, asset)} تقریباً برابر است "
+                    f"({prob(sc['up'])} در برابر {prob(sc['down'])})، پس فعلاً هیچ طرف برتری ندارد.")
+        else:
+            hi = lean > 0
+            out += (f"کفه کمی به سمت {'بالا' if hi else 'پایین'} سنگین‌تر است: احتمال "
+                    f"{'عبور از ' + px(r, asset) if hi else 'شکستن ' + px(s, asset)} حدود "
+                    f"{prob(sc['up'] if hi else sc['down'])} است، در برابر {prob(sc['down'] if hi else sc['up'])} برای سمت مقابل.")
+    return re.sub(r"\s+", " ", out).replace(" .", ".").strip()
+
+
 def asset_advice(f: Facts, asset: str, now: pd.Timestamp) -> str:
     name, x = ASSET_FA[asset], f.asset(asset)
     p = x.get("price")
@@ -487,7 +548,7 @@ def asset_advice(f: Facts, asset: str, now: pd.Timestamp) -> str:
          f"قیمت: {px(p, asset)} دلار{' (PAXG، نماینده‌ی طلا)' if asset == 'Gold' else ''}", ""]
 
     # 1. where we are
-    L.append("<b>کجای بازاریم؟</b>")
+    L.append("<b>کجای بازاریم؟ (جزئیات)</b>")
     first = ""
     if mv and mv.get("chg7d") is not None:
         first = (f"{name} در ۷ روز گذشته {pct(mv['chg7d'])} و در ۲۴ ساعت اخیر {pct(mv['chg24'])} تغییر کرده؛ "
@@ -579,6 +640,8 @@ def asset_advice(f: Facts, asset: str, now: pd.Timestamp) -> str:
                 f"{' یا انتشار ' + ev_name if ev_name else ''} صبر کن.")
     L.insert(3, f"💡 <b>خلاصه برای تصمیم:</b> {tldr}")
     L.insert(4, "")
+    read = analyst_read(name, asset, x, mv, drift, sg, sc, r, s, evs[0] if evs else None, bool(odd))
+    L[5:5] = ["<b>برداشت من</b>", read]
     conf = "کم" if stance == 0 or not sg or abs(drift) < 0.3 * sg else "متوسط"
     L.append(f"اطمینان این جمع‌بندی: {conf} — سیستم هنوز هیچ قاعده‌ی معاملاتی با برتری اثبات‌شده پیدا نکرده است.")
     return "\n".join(L)
@@ -603,15 +666,15 @@ _ISOLATES = re.compile("[\u200e\u200f\u2066-\u2069]")
 
 def polish(text: str) -> tuple[str, str]:
     """(text, source): an analyst-style rewrite from a free model when it keeps to the draft's numbers, else the draft."""
-    from llm import github_models
+    from llm import free_writer
     from llm.claude import LLMError
     from reports.writer import unknown_numbers
 
-    if not github_models.available():
+    if not free_writer.available():
         return text, "template"
     draft = _ISOLATES.sub("", text)
     try:
-        out, model = github_models.chat(WRITER_SYSTEM, "DRAFT:\n" + draft)
+        out, model = free_writer.chat(WRITER_SYSTEM, "DRAFT:\n" + draft)
     except LLMError as e:
         print(f"::warning::advisor rewrite unavailable ({str(e)[:300]}); using the template")
         return text, "template"
@@ -634,7 +697,7 @@ def build(f: Facts, now: pd.Timestamp, rewrite: bool = False) -> list[str]:
         src = {s for _, s in done} - {"template"}
         print(f"::notice title=advisor writer::{', '.join(s for _, s in done)}")
         if src:
-            msgs[-1] += "\n\n✍️ متن را یک مدل زبانی رایگان (GitHub Models) از روی اعداد سیستم بازنویسی کرده؛ هیچ عدد تازه‌ای اضافه نشده."
+            msgs[-1] += "\n\n✍️ متن را یک مدل زبانی رایگان از روی اعداد سیستم بازنویسی کرده؛ هیچ عدد تازه‌ای اضافه نشده."
     msgs[-1] += "\n\n" + NOTE
     return msgs
 

@@ -22,7 +22,7 @@ def f(tmp_path_factory):
 
 @pytest.fixture(autouse=True)
 def no_secrets(monkeypatch, tmp_path):
-    for k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "ANTHROPIC_API_KEY", "DASHBOARD_URL"):
+    for k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "ANTHROPIC_API_KEY", "DASHBOARD_URL", "LLM_API_KEY", "GITHUB_TOKEN"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setattr("notify.telegram.OUTBOX", tmp_path / "outbox")
 
@@ -86,19 +86,19 @@ def test_job_dry_run_writes_three_messages(f, tmp_path):
 
 
 def test_rewrite_is_kept_only_without_new_numbers(f, monkeypatch):
-    from llm import github_models
+    from llm import free_writer
 
     msg = advisor.build(f, NOW)[1]
     title = _plain(msg).splitlines()[0]
     monkeypatch.setenv("GITHUB_TOKEN", "t")
     nums = re.findall(r"\d[\d,]*", _plain(msg))
     good = f"{title}\n<b>کجای بازاریم؟</b>\nقیمت حدود {nums[0]} است و بازار منتظر است."
-    monkeypatch.setattr(github_models, "chat", lambda s, u, **k: (good, "openai/gpt-4.1"))
+    monkeypatch.setattr(free_writer, "chat", lambda s, u, **k: (good, "openai/gpt-4.1"))
     out, src = advisor.polish(msg)
     assert src == "openai/gpt-4.1" and "منتظر" in out and f"⁦{nums[0]}⁩" in out
-    monkeypatch.setattr(github_models, "chat", lambda s, u, **k: (good + " احتمال 87٪.", "m"))
+    monkeypatch.setattr(free_writer, "chat", lambda s, u, **k: (good + " احتمال 87٪.", "m"))
     assert advisor.polish(msg) == (msg, "template")  # invented number → keep the draft
-    monkeypatch.setattr(github_models, "chat", lambda s, u, **k: (good + " <i>x</i>", "m"))
+    monkeypatch.setattr(free_writer, "chat", lambda s, u, **k: (good + " <i>x</i>", "m"))
     assert advisor.polish(msg)[1] == "template"  # unsupported tag
     monkeypatch.delenv("GITHUB_TOKEN")
     assert advisor.polish(msg) == (msg, "template")

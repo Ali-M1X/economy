@@ -1,8 +1,11 @@
-"""Free text generation through GitHub Models, used to make the experimental advisory report read like an analyst.
+"""Optional free text generation for the experimental advisory report (any OpenAI-compatible chat endpoint).
 
-Inside GitHub Actions the workflow's own GITHUB_TOKEN works as the key when the job has `permissions: models: read`,
-so there is no account, key or bill (the free tier allows a few dozen requests a day; the report needs three).
-Every call can fail (no token, rate limit, network) and raises LLMError; callers keep their template text.
+- With the secrets LLM_API_KEY (+ LLM_BASE_URL, LLM_MODEL) it uses that provider, e.g. a free OpenRouter key
+  (LLM_BASE_URL=https://openrouter.ai/api/v1, LLM_MODEL=deepseek/deepseek-chat-v3-0324:free) or a free Gemini key
+  (LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai, LLM_MODEL=gemini-2.5-flash).
+- Otherwise it tries GitHub Models with the workflow's GITHUB_TOKEN (permissions: models: read). In October 2026 that
+  endpoint answered every request with a bare "OK", so in practice the template text is used.
+Every call can fail and raises LLMError; callers keep their template text.
 """
 
 from __future__ import annotations
@@ -19,19 +22,28 @@ ENDPOINTS = (("https://models.github.ai/inference/chat/completions", ("openai/gp
              ("https://models.inference.ai.azure.com/chat/completions", ("gpt-4.1", "gpt-4o", "gpt-4o-mini")))
 
 
+def _tries() -> list[tuple[str, str, str]]:
+    """(url, model, key) in the order to try."""
+    if os.environ.get("LLM_API_KEY"):
+        base = (os.environ.get("LLM_BASE_URL") or "https://openrouter.ai/api/v1").rstrip("/")
+        model = os.environ.get("LLM_MODEL") or "deepseek/deepseek-chat-v3-0324:free"
+        return [(f"{base}/chat/completions", model, os.environ["LLM_API_KEY"])]
+    tok = os.environ.get("GITHUB_TOKEN")
+    return [(url, m, tok) for url, models in ENDPOINTS for m in models] if tok else []
+
+
 def available() -> bool:
-    return bool(os.environ.get("GITHUB_TOKEN")) and os.environ.get("ADVISOR_LLM", "github") == "github"
+    return bool(_tries())
 
 
 def chat(system: str, user: str, *, max_tokens: int = 3000, session: requests.Session | None = None) -> tuple[str, str]:
     """(text, model) from the first model that answers."""
-    token = os.environ.get("GITHUB_TOKEN")
-    if not token:
-        raise LLMError("GITHUB_TOKEN not set")
+    tries = _tries()
+    if not tries:
+        raise LLMError("no LLM_API_KEY or GITHUB_TOKEN")
     http = session or requests.Session()
     errors = []
-    tries = [(url, m) for url, models in ENDPOINTS for m in models]
-    for url, model in tries:
+    for url, model, token in tries:
         try:
             r = http.post(url, timeout=120, headers={"Authorization": f"Bearer {token}",
                                                      "Accept": "application/vnd.github+json",
@@ -58,7 +70,7 @@ def chat(system: str, user: str, *, max_tokens: int = 3000, session: requests.Se
 
 
 def probe() -> None:
-    """Print what the endpoints answer (python -m llm.github_models), for diagnosing the free tier from Actions."""
+    """Print what the endpoints answer (python -m llm.free_writer), for diagnosing the free tier from Actions."""
     token = os.environ.get("GITHUB_TOKEN", "")
     h = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     body = {"model": "openai/gpt-4.1-mini", "messages": [{"role": "user", "content": "Say hi"}], "max_tokens": 20}
