@@ -13,8 +13,10 @@ import requests
 
 from llm.claude import LLMError
 
-URL = "https://models.github.ai/inference/chat/completions"
-MODELS = ("openai/gpt-4.1", "openai/gpt-4o", "openai/gpt-4.1-mini")
+# (endpoint, model ids): the current GitHub Models endpoint first, then the older Azure-hosted one that also accepts a
+# GitHub token and names models without the publisher prefix.
+ENDPOINTS = (("https://models.github.ai/inference/chat/completions", ("openai/gpt-4.1", "openai/gpt-4o", "openai/gpt-4.1-mini")),
+             ("https://models.inference.ai.azure.com/chat/completions", ("gpt-4.1", "gpt-4o", "gpt-4o-mini")))
 
 
 def available() -> bool:
@@ -28,9 +30,12 @@ def chat(system: str, user: str, *, max_tokens: int = 3000, session: requests.Se
         raise LLMError("GITHUB_TOKEN not set")
     http = session or requests.Session()
     errors = []
-    for model in [os.environ["ADVISOR_MODEL"]] if os.environ.get("ADVISOR_MODEL") else MODELS:
+    tries = [(url, m) for url, models in ENDPOINTS for m in models]
+    for url, model in tries:
         try:
-            r = http.post(URL, timeout=120, headers={"Authorization": f"Bearer {token}", "Accept": "application/json",
+            r = http.post(url, timeout=120, headers={"Authorization": f"Bearer {token}",
+                                                     "Accept": "application/vnd.github+json",
+                                                     "X-GitHub-Api-Version": "2022-11-28",
                                                      "Content-Type": "application/json"},
                           json={"model": model, "max_tokens": max_tokens, "temperature": 0.4,
                                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]})
@@ -40,7 +45,7 @@ def chat(system: str, user: str, *, max_tokens: int = 3000, session: requests.Se
             try:
                 choice = r.json()["choices"][0]
             except ValueError:
-                errors.append(f"{model}: not JSON ({r.headers.get('content-type')}, {r.url}, {r.text[:150]!r})")
+                errors.append(f"{model}: not JSON ({r.headers.get('content-type')}, {r.text[:60]!r})")
                 continue
             text = (choice.get("message") or {}).get("content") or ""
             if choice.get("finish_reason") == "length" or not text.strip():
