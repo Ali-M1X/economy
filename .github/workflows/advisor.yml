@@ -28,6 +28,10 @@ jobs:
           gh release download snapshot-latest --repo "$GITHUB_REPOSITORY" --pattern snapshot.tar.gz
           tar xzf snapshot.tar.gz
           ls output
+      - name: Probe GitHub Models (dry runs only)
+        if: ${{ inputs.dry_run }}
+        env: {GITHUB_TOKEN: "${{ github.token }}"}
+        run: python -m llm.github_models
       - name: Send the advisory report
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}

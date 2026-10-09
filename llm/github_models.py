@@ -55,3 +55,29 @@ def chat(system: str, user: str, *, max_tokens: int = 3000, session: requests.Se
         except (requests.RequestException, KeyError, ValueError, IndexError) as e:
             errors.append(f"{model}: {type(e).__name__}")
     raise LLMError("; ".join(errors) or "no model answered")
+
+
+def probe() -> None:
+    """Print what the endpoints answer (python -m llm.github_models), for diagnosing the free tier from Actions."""
+    token = os.environ.get("GITHUB_TOKEN", "")
+    h = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    body = {"model": "openai/gpt-4.1-mini", "messages": [{"role": "user", "content": "Say hi"}], "max_tokens": 20}
+    for name, call in (
+            ("catalog", lambda: requests.get("https://models.github.ai/catalog/models", headers=h, timeout=30)),
+            ("plain", lambda: requests.post(ENDPOINTS[0][0], headers=h, json=body, timeout=60)),
+            ("stream-off", lambda: requests.post(ENDPOINTS[0][0], headers={**h, "Accept": "application/json"},
+                                                 json={**body, "stream": False}, timeout=60)),
+            ("no-redirect", lambda: requests.post(ENDPOINTS[0][0], headers=h, json=body, timeout=60,
+                                                  allow_redirects=False))):
+        try:
+            r = call()
+            hist = [f"{x.status_code}->{x.headers.get('location')}" for x in r.history]
+            print(f"::notice title=probe {name}::{r.status_code} {r.headers.get('content-type')} hist={hist} "
+                  f"hdr={ {k: v for k, v in r.headers.items() if k.lower().startswith(('x-', 'server', 'retry'))} } "
+                  f"body={r.text[:300]!r}".replace("\n", " "))
+        except requests.RequestException as e:
+            print(f"::notice title=probe {name}::{type(e).__name__}: {str(e)[:200]}")
+
+
+if __name__ == "__main__":
+    probe()
