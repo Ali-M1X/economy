@@ -584,8 +584,57 @@ def asset_advice(f: Facts, asset: str, now: pd.Timestamp) -> str:
     return "\n".join(L)
 
 
-def build(f: Facts, now: pd.Timestamp) -> list[str]:
+WRITER_SYSTEM = """You are a senior macro and markets analyst writing a short Telegram note in Persian (Farsi) for one
+reader who trades Bitcoin and gold. You receive a DRAFT built by code from computed data. Rewrite it so it reads like
+an experienced analyst talking to a client: fluent, warm, connected sentences that explain cause and effect and end
+in a clear takeaway, instead of a list of machine-made lines.
+
+Hard rules:
+- Use ONLY the numbers, prices, dates and percentages that appear in the DRAFT, with the same values. Never add,
+  derive, round differently or invent any number. You may drop numbers that are not needed.
+- Keep every price level, scenario probability and the advice for holders and buyers.
+- Keep the first line (the title) exactly as it is. Keep section headings in <b>…</b>; you may merge short sections.
+- Plain text plus <b>…</b> only (Telegram HTML). No Markdown, no other tags, no tables.
+- Persian prose; keep tickers and indicator names (CPI, PCE, RSI, Fed …) as in the draft.
+- Do not promise outcomes and do not add advice the draft does not contain. Keep it under 3000 characters."""
+
+_ISOLATES = re.compile("[\u200e\u200f\u2066-\u2069]")
+
+
+def polish(text: str) -> tuple[str, str]:
+    """(text, source): an analyst-style rewrite from a free model when it keeps to the draft's numbers, else the draft."""
+    from llm import github_models
+    from llm.claude import LLMError
+    from reports.writer import unknown_numbers
+
+    if not github_models.available():
+        return text, "template"
+    draft = _ISOLATES.sub("", text)
+    try:
+        out, model = github_models.chat(WRITER_SYSTEM, "DRAFT:\n" + draft)
+    except LLMError as e:
+        print(f"::warning::advisor rewrite unavailable ({str(e)[:300]}); using the template")
+        return text, "template"
+    out = re.sub(r"^```\w*\s*|\s*```$", "", out.strip())
+    bad = unknown_numbers(plain(out), {"draft": plain(draft)})
+    tags = set(re.findall(r"</?([a-zA-Z]+)", out)) - {"b"}
+    if bad or tags or len(out) > 4000 or plain(out).splitlines()[0].strip() != plain(draft).splitlines()[0].strip():
+        print(f"::warning::advisor rewrite rejected (new numbers {bad[:5]}, tags {sorted(tags)[:3]}, {len(out)} chars)")
+        return text, "template"
+    # numbers keep their left-to-right isolates, so a minus sign stays in front of the number in Persian text
+    out = re.sub(r"[-+−]?\d[\d,]*(?:\.\d+)?", lambda m: "\u2066" + m.group(0) + "\u2069", out)
+    return out, model
+
+
+def build(f: Facts, now: pd.Timestamp, rewrite: bool = False) -> list[str]:
     msgs = [macro_story(f, now), asset_advice(f, "BTC", now), asset_advice(f, "Gold", now)]
+    if rewrite:
+        done = [polish(m) for m in msgs]
+        msgs = [m for m, _ in done]
+        src = {s for _, s in done} - {"template"}
+        print(f"::notice title=advisor writer::{', '.join(s for _, s in done)}")
+        if src:
+            msgs[-1] += "\n\n✍️ متن را یک مدل زبانی رایگان (GitHub Models) از روی اعداد سیستم بازنویسی کرده؛ هیچ عدد تازه‌ای اضافه نشده."
     msgs[-1] += "\n\n" + NOTE
     return msgs
 

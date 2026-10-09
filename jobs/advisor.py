@@ -25,7 +25,9 @@ def main(argv: list[str] | None = None) -> int:
     if not f.signals:
         print("::error::no signals.json in the snapshot; nothing to analyse")
         return 1
-    for i, msg in enumerate(advisor.build(f, pd.Timestamp.now(tz="UTC"))):
+    for i, msg in enumerate(advisor.build(f, pd.Timestamp.now(tz="UTC"), rewrite=True)):
+        enc = msg.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+        print(f"::notice title=advisor message {i + 1}::{enc}")  # readable later from the run's annotations
         r = telegram.send(msg, kind=f"advisor-{i + 1}", dry_run=args.dry_run)
         print(f"advisor message {i + 1}: {'sent' if r.sent else 'dry run → ' + r.where}")
     return 0

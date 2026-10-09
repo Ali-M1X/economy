@@ -6,7 +6,7 @@ on:
   schedule:
     - cron: "15 6 * * *"   # 09:45 Tehran
   workflow_dispatch:
-permissions: {contents: read}
+permissions: {contents: read, models: read}  # models: free GitHub Models rewrite
 concurrency: {group: advisor, cancel-in-progress: false}
 jobs:
   advisor:
@@ -27,4 +27,5 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: python -m jobs.advisor --root output

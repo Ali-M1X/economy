@@ -83,3 +83,22 @@ def test_tech_story_warns_when_the_daily_low_broke():
 def test_job_dry_run_writes_three_messages(f, tmp_path):
     assert advisor_job.main(["--root", str(f.root), "--dry-run"]) == 0
     assert len(list((tmp_path / "outbox").glob("*advisor-*.html"))) == 3
+
+
+def test_rewrite_is_kept_only_without_new_numbers(f, monkeypatch):
+    from llm import github_models
+
+    msg = advisor.build(f, NOW)[1]
+    title = _plain(msg).splitlines()[0]
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    nums = re.findall(r"\d[\d,]*", _plain(msg))
+    good = f"{title}\n<b>کجای بازاریم؟</b>\nقیمت حدود {nums[0]} است و بازار منتظر است."
+    monkeypatch.setattr(github_models, "chat", lambda s, u, **k: (good, "openai/gpt-4.1"))
+    out, src = advisor.polish(msg)
+    assert src == "openai/gpt-4.1" and "منتظر" in out and f"⁦{nums[0]}⁩" in out
+    monkeypatch.setattr(github_models, "chat", lambda s, u, **k: (good + " احتمال 87٪.", "m"))
+    assert advisor.polish(msg) == (msg, "template")  # invented number → keep the draft
+    monkeypatch.setattr(github_models, "chat", lambda s, u, **k: (good + " <i>x</i>", "m"))
+    assert advisor.polish(msg)[1] == "template"  # unsupported tag
+    monkeypatch.delenv("GITHUB_TOKEN")
+    assert advisor.polish(msg) == (msg, "template")
