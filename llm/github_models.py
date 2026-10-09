@@ -37,7 +37,11 @@ def chat(system: str, user: str, *, max_tokens: int = 3000, session: requests.Se
             if r.status_code != 200:
                 errors.append(f"{model}: HTTP {r.status_code} {r.text[:120]}")
                 continue
-            choice = r.json()["choices"][0]
+            try:
+                choice = r.json()["choices"][0]
+            except ValueError:
+                errors.append(f"{model}: not JSON ({r.headers.get('content-type')}, {r.url}, {r.text[:150]!r})")
+                continue
             text = (choice.get("message") or {}).get("content") or ""
             if choice.get("finish_reason") == "length" or not text.strip():
                 errors.append(f"{model}: truncated or empty")

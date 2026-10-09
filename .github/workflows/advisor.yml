@@ -6,6 +6,11 @@ on:
   schedule:
     - cron: "15 6 * * *"   # 09:45 Tehran
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "build the messages without sending them to Telegram"
+        type: boolean
+        default: false
 permissions: {contents: read, models: read}  # models: free GitHub Models rewrite
 concurrency: {group: advisor, cancel-in-progress: false}
 jobs:
@@ -28,4 +33,4 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GITHUB_TOKEN: ${{ github.token }}
-        run: python -m jobs.advisor --root output
+        run: python -m jobs.advisor --root output ${{ inputs.dry_run && '--dry-run' || '' }}
