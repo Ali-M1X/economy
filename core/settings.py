@@ -44,8 +44,8 @@ class Settings:
             "HTTP_USER_AGENT", "MacroPulse/0.1 (+https://github.com/ali-m1x/economy; research, non-commercial)"
         )
     )
-    # Optional sources whose terms are unclear; opt-in only (see DATA_GAPS.md).
-    enable_ff_calendar: bool = field(default_factory=lambda: _env("ENABLE_FF_CALENDAR", "0") == "1")
+    # ForexFactory consensus feed (informal terms, see DATA_GAPS.md): on by default, ENABLE_FF_CALENDAR=0 turns it off.
+    enable_ff_calendar: bool = field(default_factory=lambda: _env("ENABLE_FF_CALENDAR", "1") == "1")
 
 
 def get_settings() -> Settings:

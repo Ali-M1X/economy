@@ -1,0 +1,98 @@
+[
+ {
+  "title": "Bank Holiday",
+  "country": "USD",
+  "date": "2026-10-12T07:00:00-04:00",
+  "impact": "Holiday",
+  "forecast": "",
+  "previous": ""
+ },
+ {
+  "title": "NFIB Small Business Index",
+  "country": "USD",
+  "date": "2026-10-13T06:00:00-04:00",
+  "impact": "Low",
+  "forecast": "98.0",
+  "previous": "98.7"
+ },
+ {
+  "title": "Core CPI m/m",
+  "country": "USD",
+  "date": "2026-10-14T08:30:00-04:00",
+  "impact": "High",
+  "forecast": "0.2%",
+  "previous": "0.3%"
+ },
+ {
+  "title": "CPI m/m",
+  "country": "USD",
+  "date": "2026-10-14T08:30:00-04:00",
+  "impact": "High",
+  "forecast": "0.6%",
+  "previous": "0.4%"
+ },
+ {
+  "title": "CPI y/y",
+  "country": "USD",
+  "date": "2026-10-14T08:30:00-04:00",
+  "impact": "High",
+  "forecast": "3.6%",
+  "previous": "3.4%"
+ },
+ {
+  "title": "PPI m/m",
+  "country": "USD",
+  "date": "2026-10-15T08:30:00-04:00",
+  "impact": "High",
+  "forecast": "0.5%",
+  "previous": "0.4%"
+ },
+ {
+  "title": "Retail Sales m/m",
+  "country": "USD",
+  "date": "2026-10-15T08:30:00-04:00",
+  "impact": "High",
+  "forecast": "0.3%",
+  "previous": "1.2%"
+ },
+ {
+  "title": "Philly Fed Manufacturing Index",
+  "country": "USD",
+  "date": "2026-10-15T08:30:00-04:00",
+  "impact": "Medium",
+  "forecast": "26.5",
+  "previous": "37.8"
+ },
+ {
+  "title": "Unemployment Claims",
+  "country": "USD",
+  "date": "2026-10-15T08:30:00-04:00",
+  "impact": "Medium",
+  "forecast": "195K",
+  "previous": "197K"
+ },
+ {
+  "title": "Empire State Manufacturing Index",
+  "country": "USD",
+  "date": "2026-10-15T08:30:00-04:00",
+  "impact": "Low",
+  "forecast": "3.2",
+  "previous": "7.6"
+ },
+ {
+  "title": "Fed Chairman Warsh Speaks",
+  "country": "USD",
+  "date": "2026-10-15T23:30:00-04:00",
+  "impact": "High",
+  "forecast": "",
+  "previous": ""
+ },
+ {
+  "title": "CPI m/m",
+  "country": "EUR",
+  "date": "2026-10-14T05:00:00-04:00",
+  "impact": "High",
+  "forecast": "0.1%",
+  "previous": "0.2%"
+ }
+]

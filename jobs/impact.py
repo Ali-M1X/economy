@@ -45,7 +45,14 @@ def load_bars(cache: Path, asset: str) -> pd.DataFrame | None:
 
 # ───────────────────────────── short horizon ─────────────────────────────
 
-def short_horizon(cfg: dict, vintages: dict, bars: dict[str, pd.DataFrame], now: pd.Timestamp):
+def load_consensus_history(cache: Path) -> pd.DataFrame | None:
+    """Pre-release consensus kept by jobs.forecasts (None until the first capture)."""
+    p = cache / "forecast_history.csv"
+    return pd.read_csv(p) if p.exists() else None
+
+
+def short_horizon(cfg: dict, vintages: dict, bars: dict[str, pd.DataFrame], now: pd.Timestamp,
+                  consensus: pd.DataFrame | None = None):
     ests, all_events = [], []
     for rel in cfg["releases"]:
         v = vintages.get(rel["key"])
@@ -53,6 +60,7 @@ def short_horizon(cfg: dict, vintages: dict, bars: dict[str, pd.DataFrame], now:
             continue
         freq = "W" if rel["key"] == "initial_claims" else "M"
         ev = events.surprises(v, rel["key"], rel["measure"], rel["expected"], rel["release"], freq=freq)
+        ev = events.apply_consensus(ev, consensus)
         all_events.append(ev)
         for asset, b in bars.items():
             if b is None:
@@ -211,13 +219,23 @@ def recent_releases(evs: pd.DataFrame, now: pd.Timestamp, days: int = 7) -> list
 
 
 def latest_surprises(evs: pd.DataFrame) -> dict[str, dict]:
-    """The most recent first-print surprise of every release indicator (for the reports' indicator table)."""
+    """The most recent first-print surprise of every release indicator (for the reports' indicator table), with the
+    indicator's surprise scale and its past actual − consensus errors (for the odds of upcoming releases)."""
     if evs.empty:
         return {}
     last = evs.sort_values("release_utc").groupby("indicator").tail(1)
-    return {r.indicator: {"release_utc": pd.Timestamp(r.release_utc).isoformat(), "obs_date": f"{pd.Timestamp(r.obs_date):%Y-%m-%d}",
-                          "actual": round(float(r.actual), 4), "expected": round(float(r.expected), 4),
-                          "z": round(float(r.z), 2), "basis": r.surprise_basis} for r in last.itertuples()}
+    cons = evs[evs["surprise_basis"] == "vs consensus"].sort_values("release_utc")
+    errs = {k: [round(float(a - e), 6) for a, e in zip(g["actual"], g["expected"])] for k, g in cons.groupby("indicator")}
+    out = {}
+    for r in last.itertuples():
+        scale = abs((r.actual - r.expected) / r.z) if r.z else None
+        out[r.indicator] = {"release_utc": pd.Timestamp(r.release_utc).isoformat(),
+                            "obs_date": f"{pd.Timestamp(r.obs_date):%Y-%m-%d}",
+                            "actual": round(float(r.actual), 4), "expected": round(float(r.expected), 4),
+                            "z": round(float(r.z), 2), "basis": r.surprise_basis,
+                            "scale": round(float(scale), 6) if scale is not None and np.isfinite(scale) else None,
+                            "consensus_errors": errs.get(r.indicator, [])}
+    return out
 
 
 # ───────────────────────────── report ─────────────────────────────
@@ -297,7 +315,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = indicator_config()
     data, vintages, *_ = load_cache(cache)
     bars = {"BTC": load_bars(cache, "BTC"), "Gold(PAXG)": load_bars(cache, "PAXG")}
-    short_ests, evs = short_horizon(cfg, vintages, bars, now)
+    short_ests, evs = short_horizon(cfg, vintages, bars, now, load_consensus_history(cache))
     # regimes (PIT) for the conditional estimates — same model as Phase 2
     reg = load_registry()
     known = {k: pit.known_series(data[k], reg[k], vintages.get(k)) for k in REGIME_KEYS if k in data}

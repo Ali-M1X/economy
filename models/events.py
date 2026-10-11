@@ -103,3 +103,43 @@ def event_returns(events: pd.DataFrame, bars: pd.DataFrame, horizons_h=(1, 4, 24
         post = by_end.reindex(post_t).to_numpy()
         out[f"ret_{h}h"] = np.log(post / pre) * 100
     return out.dropna(subset=[f"ret_{h}h" for h in horizons_h], how="all")
+
+
+def apply_consensus(evs: pd.DataFrame, history: pd.DataFrame | None, min_history: int = 12) -> pd.DataFrame:
+    """Re-measure surprises against the stored pre-release consensus where one exists (basis "vs consensus").
+
+    history: jobs.forecasts' forecast_history.csv (key, release_utc, consensus). A release matches on series key and
+    US/Eastern release date. z keeps the indicator's existing robust scale (surprise / z of the naive basis) until
+    there are `min_history` consensus surprises; from then on the robust scale of the earlier consensus surprises.
+    Releases without a stored consensus keep the naive expectation (mean3 / mean4 / prev)."""
+    if evs is None or evs.empty or history is None or history.empty or "consensus" not in history:
+        return evs
+    h = history.dropna(subset=["consensus"]).copy()
+    if h.empty:
+        return evs
+    from core.timeutil import NEW_YORK
+
+    h["day"] = pd.to_datetime(h["release_utc"], utc=True).dt.tz_convert(NEW_YORK).dt.date
+    cons = {(r.key, r.day): float(r.consensus) for r in h.itertuples()}
+    out = evs.copy()
+    day = pd.to_datetime(out["release_utc"], utc=True).dt.tz_convert(NEW_YORK).dt.date
+    for key, g in out.groupby("indicator"):
+        g = g.sort_values("release_utc")
+        cons_err = []
+        for i in g.index:
+            c = cons.get((key, day[i]))
+            if c is None:
+                continue
+            naive_scale = abs(out.at[i, "surprise"] / out.at[i, "z"]) if out.at[i, "z"] else np.nan
+            if len(cons_err) >= min_history:
+                e = pd.Series(cons_err)
+                scale = 1.4826 * (e - e.median()).abs().median()
+            else:
+                scale = naive_scale
+            s = out.at[i, "actual"] - c
+            cons_err.append(s)
+            out.at[i, "expected"] = c
+            out.at[i, "surprise"] = s
+            out.at[i, "z"] = s / scale if scale and np.isfinite(scale) else np.nan
+            out.at[i, "surprise_basis"] = "vs consensus"
+    return out.dropna(subset=["z"]).reset_index(drop=True)

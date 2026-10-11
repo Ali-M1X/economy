@@ -1,0 +1,141 @@
+{
+"events": [
+{
+"event_ticker": "KXCPI-26SEP",
+"series_ticker": "KXCPI",
+"title": "CPI in September",
+"sub_title": "In Sep 2026",
+"markets": [
+{
+"ticker": "KXCPI-26SEP-T-0.4",
+"event_ticker": "KXCPI-26SEP",
+"strike_type": "greater",
+"floor_strike": -0.4,
+"yes_bid_dollars": "0.9900",
+"yes_ask_dollars": "1.0000",
+"last_price_dollars": "0.9900",
+"close_time": "2026-10-14T12:25:00Z",
+"status": "active",
+"yes_sub_title": "Above -0.4%",
+"volume_fp": "1000.00"
+},
+{
+"ticker": "KXCPI-26SEP-T0.0",
+"event_ticker": "KXCPI-26SEP",
+"strike_type": "greater",
+"floor_strike": 0.0,
+"yes_bid_dollars": "0.9900",
+"yes_ask_dollars": "1.0000",
+"last_price_dollars": "0.9900",
+"close_time": "2026-10-14T12:25:00Z",
+"status": "active",
+"yes_sub_title": "Above 0.0%",
+"volume_fp": "1000.00"
+},
+{
+"ticker": "KXCPI-26SEP-T0.2",
+"event_ticker": "KXCPI-26SEP",
+"strike_type": "greater",
+"floor_strike": 0.2,
+"yes_bid_dollars": "0.9800",
+"yes_ask_dollars": "0.9900",
+"last_price_dollars": "0.9800",
+"close_time": "2026-10-14T12:25:00Z",
+"status": "active",
+"yes_sub_title": "Above 0.2%",
+"volume_fp": "1000.00"
+},
+{
+"ticker": "KXCPI-26SEP-T0.3",
+"event_ticker": "KXCPI-26SEP",
+"strike_type": "greater",
+"floor_strike": 0.3,
+"yes_bid_dollars": "0.9700",
+"yes_ask_dollars": "0.9900",
+"last_price_dollars": "0.9800",
+"close_time": "2026-10-14T12:25:00Z",
+"status": "active",
+"yes_sub_title": "Above 0.3%",
+"volume_fp": "1000.00"
+},
+{
+"ticker": "KXCPI-26SEP-T0.4",
+"event_ticker": "KXCPI-26SEP",
+"strike_type": "greater",
+"floor_strike": 0.4,
+"yes_bid_dollars": "0.9000",
+"yes_ask_dollars": "0.9200",
+"last_price_dollars": "0.9100",
+"close_time": "2026-10-14T12:25:00Z",
+"status": "active",
+"yes_sub_title": "Above 0.4%",
+"volume_fp": "1000.00"
+},
+{
+"ticker": "KXCPI-26SEP-T0.5",
+"event_ticker": "KXCPI-26SEP",
+"strike_type": "greater",
+"floor_strike": 0.5,
+"yes_bid_dollars": "0.5900",
+"yes_ask_dollars": "0.6200",
+"last_price_dollars": "0.6200",
+"close_time": "2026-10-14T12:25:00Z",
+"status": "active",
+"yes_sub_title": "Above 0.5%",
+"volume_fp": "1000.00"
+},
+{
+"ticker": "KXCPI-26SEP-T0.6",
+"event_ticker": "KXCPI-26SEP",
+"strike_type": "greater",
+"floor_strike": 0.6,
+"yes_bid_dollars": "0.1300",
+"yes_ask_dollars": "0.1500",
+"last_price_dollars": "0.1400",
+"close_time": "2026-10-14T12:25:00Z",
+"status": "active",
+"yes_sub_title": "Above 0.6%",
+"volume_fp": "1000.00"
+},
+{
+"ticker": "KXCPI-26SEP-T0.7",
+"event_ticker": "KXCPI-26SEP",
+"strike_type": "greater",
+"floor_strike": 0.7,
+"yes_bid_dollars": "0.0100",
+"yes_ask_dollars": "0.0200",
+"last_price_dollars": "0.0200",
+"close_time": "2026-10-14T12:25:00Z",
+"status": "active",
+"yes_sub_title": "Above 0.7%",
+"volume_fp": "1000.00"
+},
+{
+"ticker": "KXCPI-26SEP-T0.8",
+"event_ticker": "KXCPI-26SEP",
+"strike_type": "greater",
+"floor_strike": 0.8,
+"yes_bid_dollars": "0.0000",
+"yes_ask_dollars": "0.0100",
+"last_price_dollars": "0.0100",
+"close_time": "2026-10-14T12:25:00Z",
+"status": "active",
+"yes_sub_title": "Above 0.8%",
+"volume_fp": "1000.00"
+},
+{
+"ticker": "KXCPI-26SEP-B0.5",
+"strike_type": "between",
+"floor_strike": 0.5,
+"cap_strike": 0.6,
+"yes_bid_dollars": "0.4",
+"yes_ask_dollars": "0.5",
+"last_price_dollars": "0.45",
+"close_time": "2026-10-14T12:25:00Z",
+"status": "active"
+}
+]
+}
+],
+"cursor": ""
+}

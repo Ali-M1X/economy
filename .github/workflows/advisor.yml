@@ -1,10 +1,9 @@
 name: advisor
 # Experimental advisory report (reports/advisor.py): the latest data told as a story, with the usual % effect on
 # Bitcoin and gold, 4-week scenarios and what to do. It reads the `snapshot-latest` release the pipeline publishes,
-# so it collects nothing itself and never touches the regular reports. Daily after the 09:00 Tehran report, or by hand.
+# so it collects nothing itself and never touches the regular reports. By hand only: its story, levels, scenarios and
+# advice are part of the unified 09:00 Tehran report (reports/daily.py), so it no longer runs on a schedule.
 on:
-  schedule:
-    - cron: "15 6 * * *"   # 09:45 Tehran
   workflow_dispatch:
     inputs:
       dry_run:

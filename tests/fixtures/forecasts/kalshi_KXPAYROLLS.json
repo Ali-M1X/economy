@@ -1,0 +1,103 @@
+{
+"events": [
+{
+"event_ticker": "KXPAYROLLS-26OCT",
+"series_ticker": "KXPAYROLLS",
+"title": "Jobs numbers in October 2026?",
+"markets": [
+{
+"ticker": "KXPAYROLLS-26OCT-T-25000",
+"event_ticker": "KXPAYROLLS-26OCT",
+"strike_type": "greater",
+"floor_strike": -25000,
+"yes_bid_dollars": "0.9200",
+"yes_ask_dollars": "0.9400",
+"last_price_dollars": "0.9200",
+"close_time": "2026-11-06T13:29:00Z",
+"status": "active",
+"yes_sub_title": "Above -25,000",
+"volume_fp": "1000.00"
+},
+{
+"ticker": "KXPAYROLLS-26OCT-T0",
+"event_ticker": "KXPAYROLLS-26OCT",
+"strike_type": "greater",
+"floor_strike": 0,
+"yes_bid_dollars": "0.8600",
+"yes_ask_dollars": "0.8900",
+"last_price_dollars": "0.8600",
+"close_time": "2026-11-06T13:29:00Z",
+"status": "active",
+"yes_sub_title": "Above 0",
+"volume_fp": "1000.00"
+},
+{
+"ticker": "KXPAYROLLS-26OCT-T20000",
+"event_ticker": "KXPAYROLLS-26OCT",
+"strike_type": "greater",
+"floor_strike": 20000,
+"yes_bid_dollars": "0.7300",
+"yes_ask_dollars": "0.7800",
+"last_price_dollars": "0.7500",
+"close_time": "2026-11-06T13:29:00Z",
+"status": "active",
+"yes_sub_title": "Above 20,000",
+"volume_fp": "1000.00"
+},
+{
+"ticker": "KXPAYROLLS-26OCT-T50000",
+"event_ticker": "KXPAYROLLS-26OCT",
+"strike_type": "greater",
+"floor_strike": 50000,
+"yes_bid_dollars": "0.5000",
+"yes_ask_dollars": "0.6000",
+"last_price_dollars": "0.5600",
+"close_time": "2026-11-06T13:29:00Z",
+"status": "active",
+"yes_sub_title": "Above 50,000",
+"volume_fp": "1000.00"
+},
+{
+"ticker": "KXPAYROLLS-26OCT-T80000",
+"event_ticker": "KXPAYROLLS-26OCT",
+"strike_type": "greater",
+"floor_strike": 80000,
+"yes_bid_dollars": "0.3300",
+"yes_ask_dollars": "0.4500",
+"last_price_dollars": "0.4100",
+"close_time": "2026-11-06T13:29:00Z",
+"status": "active",
+"yes_sub_title": "Above 80,000",
+"volume_fp": "1000.00"
+},
+{
+"ticker": "KXPAYROLLS-26OCT-T100000",
+"event_ticker": "KXPAYROLLS-26OCT",
+"strike_type": "greater",
+"floor_strike": 100000,
+"yes_bid_dollars": "0.2300",
+"yes_ask_dollars": "0.2900",
+"last_price_dollars": "0.2800",
+"close_time": "2026-11-06T13:29:00Z",
+"status": "active",
+"yes_sub_title": "Above 100,000",
+"volume_fp": "1000.00"
+},
+{
+"ticker": "KXPAYROLLS-26OCT-T125000",
+"event_ticker": "KXPAYROLLS-26OCT",
+"strike_type": "greater",
+"floor_strike": 125000,
+"yes_bid_dollars": "0.1200",
+"yes_ask_dollars": "0.1600",
+"last_price_dollars": "0.1500",
+"close_time": "2026-11-06T13:29:00Z",
+"status": "active",
+"yes_sub_title": "Above 125,000",
+"volume_fp": "1000.00"
+}
+]
+}
+],
+"cursor": ""
+}

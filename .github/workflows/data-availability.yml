@@ -23,7 +23,7 @@ on:
       trigger: {type: string, default: ""}
   push:
     branches: ["claude/**"]
-    paths: ["collectors/**", "config/**", "jobs/availability.py", "core/**", "db/**", "validation/**",
+    paths: ["collectors/**", "config/**", "jobs/availability.py", "jobs/forecasts.py", "core/**", "db/**", "validation/**",
             ".github/workflows/data-availability.yml"]
 jobs:
   report:
@@ -73,6 +73,22 @@ jobs:
         run: |
           if [ -n "$DATABASE_URL" ]; then STORE=--store; else STORE=; echo "DB storage disabled (ENABLE_DB_STORAGE != true)"; fi
           python -m jobs.availability --cache-dir output/cache $STORE
+      - name: Restore the pre-release consensus history
+        uses: actions/cache/restore@v4
+        with:
+          path: state/forecast_history.csv
+          key: mp-forecast-hist-${{ github.run_id }}
+          restore-keys: mp-forecast-hist-
+      - name: Free forecasts (consensus, nowcasts, prediction markets)
+        if: success() || failure()
+        continue-on-error: true  # optional: the reports fall back to the system's own expectation
+        run: python -m jobs.forecasts --cache output/cache --state state
+      - name: Save the pre-release consensus history
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state/forecast_history.csv
+          key: mp-forecast-hist-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Classify news and Fed documents (Claude)
         if: env.MODE != 'none'
         run: python -m jobs.classify --cache output/cache --state state
@@ -106,6 +122,11 @@ jobs:
         run: python -m jobs.health --root output
       - name: Telegram messages
         if: (success() || failure()) && env.MODE != 'none'
+        env:
+          # optional free key: rephrases the daily report's paragraphs (rejected if it adds any number)
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
         run: |
           case "$MODE" in
             release)        python -m jobs.notify report --root output --state state --trigger "$TRIGGER" --changes ;;

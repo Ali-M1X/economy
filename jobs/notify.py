@@ -1,9 +1,9 @@
 """Compose and send the Persian Telegram messages.
 
-    python -m jobs.notify report  --root output [--trigger "CPI release"]   # overview + BTC + gold + tables + glossary
-    python -m jobs.notify weekly  --root output                            # the same, as the weekly summary
     python -m jobs.notify daily   --root output                            # the 09:00 Tehran report, once per day
-    python -m jobs.notify report  --root output --changes                  # after a release: + what changed
+    python -m jobs.notify report  --root output [--trigger "CPI release"]   # the same unified report, on request
+    python -m jobs.notify report  --root output --changes                  # after a release: + what changed, on top
+    python -m jobs.notify weekly  --root output                            # overview + BTC + gold + full tables + glossary
     python -m jobs.notify prealert --root snap --events nfp-2026-10-02     # shortly before an important release
     python -m jobs.notify headsup --root output                            # releases scheduled for tomorrow (Tehran)
     python -m jobs.notify news    --root output                            # alerts for new importance ≥ 4 news
@@ -29,7 +29,7 @@ from jobs import health as health_mod
 from jobs import scheduler
 from notify import telegram
 from reports import facts as facts_mod
-from reports import asset_report, messages, writer
+from reports import asset_report, daily, messages, writer
 
 MAX_NEWS_ALERTS = 3
 NEWS_WINDOW = pd.Timedelta(hours=6)
@@ -94,18 +94,22 @@ def snapshot_scores(f, now: pd.Timestamp) -> dict:
 
 def _send_report(f, now: pd.Timestamp, trigger: str | None, names: dict, dry_run: bool, root: Path,
                  weekly: bool, state: Path | None = None, changes: bool = False) -> None:
-    # one overview (shared context), one self-contained report per asset, the full indicator tables, a glossary
-    chains = {}
-    for a in ("BTC", "Gold"):
-        chains[a], source = writer.explain_asset(f, a, asset_report.chain_sentences(f, a, now))
-        print(f"causal chain {a}: {source}")
     current = snapshot_scores(f, now)
-    block = asset_report.changes_block(_state_json(state, "last_scores.json"), current) if changes else []
-    for kind, text in asset_report.report_messages(f, now, chains, trigger, names, weekly=weekly):
-        if kind == "overview" and block:
-            head, _, rest = text.partition("\n\n")
-            text = head + "\n\n" + "\n".join(block) + "\n\n" + rest
-        _send(text, kind, dry_run, root)
+    if weekly:
+        # the weekly keeps the detailed set: overview, one report per asset, the full indicator tables, a glossary
+        chains = {}
+        for a in ("BTC", "Gold"):
+            chains[a], source = writer.explain_asset(f, a, asset_report.chain_sentences(f, a, now))
+            print(f"causal chain {a}: {source}")
+        for kind, text in asset_report.report_messages(f, now, chains, trigger, names, weekly=True):
+            _send(text, kind, dry_run, root)
+    else:
+        # the one unified report (daily, on request, and after a release with "what changed" on top)
+        block = asset_report.changes_block(_state_json(state, "last_scores.json"), current) if changes else None
+        msgs = daily.build(f, now, changes=block, trigger=trigger)
+        kind = "release" if changes else "daily"
+        for i, text in enumerate(msgs, 1):
+            _send(text, kind if len(msgs) == 1 else f"{kind}-{i}", dry_run, root)
     _save_state(state, "last_scores.json", current)
 
 

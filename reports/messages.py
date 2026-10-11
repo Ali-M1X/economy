@@ -90,14 +90,33 @@ def events_on(f: Facts, day_tehran) -> pd.DataFrame:
     return d[d["local"].dt.date == day_tehran].drop_duplicates("event_id").sort_values("scheduled_utc")
 
 
+def forecast_lines(f: Facts, e) -> list[str]:
+    """The forecast and its source: the consensus when one was collected, else the system's own expectation; plus the
+    odds of a hotter / cooler print (reports.outlook)."""
+    from reports import daily, outlook
+
+    try:
+        o = outlook.event_outlook(f, e)
+    except Exception as exc:  # noqa: BLE001 — a forecast problem must never block the alert
+        print(f"::warning::forecast for {getattr(e, 'event_id', '?')} unavailable: {exc}")
+        o = None
+    if o is None or (o.forecast is None and not o.fedwatch):
+        return ["📊 پیش‌بینی: اجماع رایگان در دسترس نیست و انتظار سیستم هم قابل محاسبه نبود"]
+    if o.fedwatch:
+        return [f"📊 {daily.odds_phrase(o)} (منبع: {outlook.SOURCE_FA['fedwatch']})"]
+    name = esc(ind_name(o.key))
+    head = (f"📊 اجماع {name}: {daily.fval(o.key, o.forecast)}" if o.basis == "consensus" else
+            f"📊 انتظار سیستم برای {name}: {daily.fval(o.key, o.forecast)} (اجماع رایگان در دسترس نیست؛ میانگین دوره‌های قبل)")
+    return [head, f"🎲 {daily.odds_phrase(o)}", f"   منبع: {daily.source_phrase(o)}"]
+
+
 def _event_block(f: Facts, e, pre: list[dict]) -> list[str]:
     """Name, time, previous value, effect channel, what a surprise would mean per asset, front-running read."""
     rel = releases_cfg()
     rcfg = {r["key"]: r for r in indicators_cfg()["releases"]}
     r = rel.get(e.release_id, {})
     L = ["", f"<b>{esc(r.get('name_fa', e.release_id))}</b> {'★' * int(r.get('importance', 1))}",
-         f"⏰ زمان: {tehran(e.scheduled_utc)} (به وقت تهران)",
-         "📊 پیش‌بینی (اجماع): منبع رایگان ندارد — به‌جای آن «انتظار» سیستم = میانگین ۳ دوره قبل"]
+         f"⏰ زمان: {tehran(e.scheduled_utc)} (به وقت تهران)", *forecast_lines(f, e)]
     for key in r.get("series_keys", [])[:2]:
         cfg = rcfg.get(key)
         measure = cfg["measure"] if cfg else "level"
@@ -131,7 +150,8 @@ def headsup(f: Facts, now: pd.Timestamp) -> str | None:
     L = [f"📅 <b>هشدار یک روز قبل — انتشارهای فردا ({jdate(str(tomorrow))})</b>"]
     for e in ev.itertuples():
         L += _event_block(f, e, pre)
-    L.append("\n«انتظار» = میانگین ۳ دوره قبل (اجماع تحلیلگران رایگان در دسترس نیست). ضریب‌ها همبستگی تاریخی‌اند، نه پیش‌بینی.")
+    L.append("\n«اجماع» = میانگین پیش‌بینی تحلیلگران (ForexFactory)؛ اگر نباشد «انتظار سیستم» = میانگین دوره‌های قبل. "
+             "ضریب‌ها همبستگی تاریخی‌اند، نه پیش‌بینی.")
     return "\n".join(L) + footer()
 
 

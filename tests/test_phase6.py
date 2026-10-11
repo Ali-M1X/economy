@@ -240,7 +240,7 @@ def test_headsup_lists_tomorrows_releases_only(root):
     msg = plain(messages.headsup(f, NOW) or "")
     assert "مدعیان بیمه بیکاری" in msg          # scheduled NOW + 1 day in the demo
     assert "شاخص قیمت مصرف‌کننده" not in msg   # NOW + 3 days
-    assert "منبع رایگان ندارد" in msg
+    assert "انتظار سیستم" in msg and "اجماع رایگان در دسترس نیست" in msg
 
 
 def test_news_alert_escapes_titles():
@@ -280,17 +280,25 @@ def test_health_warning_is_not_repeated(root, tmp_path):
 
 # ── notify job end to end (dry run) ──────────────────────────────────────
 
+def _kinds(paths) -> list[str]:
+    return sorted(p.name.split("-", 2)[-1].removesuffix(".html") for p in paths)
+
+
 def test_notify_report_weekly_headsup_dry_run(root, tmp_path):
     state = tmp_path / "state"
-    report = ["glossary", "overview", "report_btc", "report_gold", "table_btc", "table_gold"]
     for mode in ("report", "headsup"):
         assert notify.run(mode, root, state, NOW, "انتشار CPI", dry_run=True) == 0
-    sent = sorted(p.name.split("-", 2)[-1].removesuffix(".html") for p in telegram.OUTBOX.iterdir())
-    assert sent == sorted(["headsup", *report])
-    assert sorted(p.stem for p in (root / "messages").glob("*.html")) == sorted(["headsup", *report])
+    sent = _kinds(telegram.OUTBOX.iterdir())
+    report = [k for k in sent if k != "headsup"]
+    # the unified report: one message, or a few parts marked (۱/N)
+    assert "headsup" in sent and report and all(k == "daily" or k.startswith("daily-") for k in report)
+    assert sorted(p.stem for p in (root / "messages").glob("*.html")) == sent
     notify.run("headsup", root, state, NOW, None, dry_run=True)  # same day again → not re-sent
-    assert len(list(telegram.OUTBOX.iterdir())) == 7
+    assert len(list(telegram.OUTBOX.iterdir())) == len(sent)
+    # the weekly keeps the detailed set: overview, per-asset reports, full tables, glossary
     assert notify.run("weekly", root, state, NOW, None, dry_run=True) == 0
+    weekly = set(_kinds(telegram.OUTBOX.iterdir())) - set(sent)
+    assert weekly == {"glossary", "overview", "report_btc", "report_gold", "table_btc", "table_gold"}
     assert "خلاصه‌ی هفتگی" in (root / "messages" / "overview.html").read_text(encoding="utf-8")
 
 
@@ -301,7 +309,6 @@ def _daily_done(state, now=NOW):
 
 def test_daily_report_at_0900_tehran_once_per_day(root, tmp_path):
     state = tmp_path / "state"
-    report = ["glossary", "overview", "report_btc", "report_gold", "table_btc", "table_gold"]
     day = pd.Timestamp("2026-10-03 00:00", tz="UTC")  # 03:30 Tehran
     assert scheduler.daily_target(day) == pd.Timestamp("2026-10-03 05:30", tz="UTC")  # 09:00 Tehran
     none = lambda: []  # noqa: E731
@@ -319,10 +326,10 @@ def test_daily_report_at_0900_tehran_once_per_day(root, tmp_path):
     assert scheduler.plan(scheduler.DAILY, late, state, calendar_fn=none).mode == "none"
     sent_state = tmp_path / "s2"  # the report itself (fixture data is from NOW)
     assert notify.run("daily", root, sent_state, NOW, "گزارش روزانه", dry_run=True) == 0
-    sent = sorted(p.name.split("-", 2)[-1].removesuffix(".html") for p in telegram.OUTBOX.iterdir())
-    assert sent == sorted(report)
+    sent = _kinds(telegram.OUTBOX.iterdir())
+    assert sent and all(k == "daily" or k.startswith("daily-") for k in sent)
     notify.run("daily", root, sent_state, NOW, None, dry_run=True)  # same day → not re-sent
-    assert len(list(telegram.OUTBOX.iterdir())) == len(report)
+    assert len(list(telegram.OUTBOX.iterdir())) == len(sent)
     assert scheduler.plan(scheduler.DAILY, day + pd.Timedelta(days=1, hours=1), state, calendar_fn=none).mode == "daily"
 
 
@@ -380,7 +387,8 @@ def test_release_report_carries_changes_and_saves_scores(root, tmp_path):
     notify.run("daily", root, state, NOW, None, dry_run=True)
     assert (state / "last_scores.json").exists()
     notify.run("report", root, state, NOW, "انتشار CPI", dry_run=True, changes=True)
-    assert "چه تغییر کرد" in (root / "messages" / "overview.html").read_text(encoding="utf-8")
+    first = sorted((root / "messages").glob("release*.html"))[0].read_text(encoding="utf-8")
+    assert "گزارش بعد از انتشار" in first and "چه تغییر کرد" in first
     notify.run("prealert", root, state, NOW, None, dry_run=True, events=["cpi-2026-10-15"])
     assert (root / "messages" / "prealert.html").exists()
 

@@ -59,6 +59,7 @@ class Facts:
     availability: dict = field(default_factory=dict)
     prepos: dict = field(default_factory=dict)             # prepos.json (pre-positioning backtest + live)
     surprises: dict = field(default_factory=dict)          # latest_surprises.json (last first-print surprise per release)
+    forecasts: pd.DataFrame = field(default_factory=pd.DataFrame)  # cache/forecasts.csv (jobs.forecasts)
 
     # ── lookups ──
     def asset(self, a: str) -> dict:
@@ -148,6 +149,11 @@ def load(root: Path) -> Facts:
               availability={r["key"]: r for r in avail.get("series", [])})
     if (root / "impact_coefficients.csv").exists():
         f.coefs = pd.read_csv(root / "impact_coefficients.csv")
+    if (root / "cache" / "forecasts.csv").exists():
+        try:
+            f.forecasts = pd.read_csv(root / "cache" / "forecasts.csv")
+        except (ValueError, pd.errors.EmptyDataError):
+            pass
     cal = root / "cache" / "calendar_events.csv"
     if cal.exists():
         f.calendar = pd.read_csv(cal)

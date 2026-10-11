@@ -1,0 +1,46 @@
+# Free forecast sources for upcoming US releases (collectors/forecasts.py).
+#
+# forexfactory: weekly calendar feed (consensus "forecast" and "previous") for USD events.
+#   Each title maps to our release id (config/releases.yaml) and series key (config/indicators.yaml).
+#   unit: how to turn the feed's string into the series' own measure —
+#     pct        "0.3%"   → 0.3        (m/m %, rates, q/q annualised %)
+#     thousands  "150K"   → 150        (payroll change, JOLTS openings are in thousands)
+#     persons    "224K"   → 224000     (jobless claims are counted in persons)
+#     index      "12.3"   → 12.3       (diffusion indexes)
+# kalshi: public market-data series (read-only API, no key). "Above X" contracts give P(actual > X).
+#   unit converts the strike to the series' measure (payroll strikes are in jobs → thousands).
+# cleveland: Cleveland Fed inflation nowcast series name → series key (m/m %).
+# gdpnow: FRED series GDPNOW (Atlanta Fed) → the GDP release.
+
+forexfactory:
+  "CPI m/m": {release: cpi, key: cpi, unit: pct}
+  "Core CPI m/m": {release: cpi, key: core_cpi, unit: pct}
+  "PPI m/m": {release: ppi, key: ppi_final_demand, unit: pct}
+  "PCE Price Index m/m": {release: pce, key: pce, unit: pct}
+  "Core PCE Price Index m/m": {release: pce, key: core_pce, unit: pct}
+  "Non-Farm Employment Change": {release: nfp, key: nonfarm_payrolls, unit: thousands}
+  "Unemployment Rate": {release: nfp, key: unemployment_rate, unit: pct}
+  "Average Hourly Earnings m/m": {release: nfp, key: avg_hourly_earnings, unit: pct}
+  "JOLTS Job Openings": {release: jolts, key: jolts_openings, unit: thousands}
+  "Unemployment Claims": {release: claims, key: initial_claims, unit: persons}
+  "ADP Non-Farm Employment Change": {release: adp, key: adp_private_payrolls, unit: thousands}
+  "Advance GDP q/q": {release: gdp, key: gdp, unit: pct}
+  "Prelim GDP q/q": {release: gdp, key: gdp, unit: pct}
+  "Final GDP q/q": {release: gdp, key: gdp, unit: pct}
+  "Philly Fed Manufacturing Index": {release: philly, key: philly_fed_activity, unit: index}
+  "Empire State Manufacturing Index": {release: empire, key: empire_state_activity, unit: index}
+  "Federal Funds Rate": {release: fomc, key: fed_target_upper, unit: pct}
+
+kalshi:
+  KXCPI: {release: cpi, key: cpi, unit: pct}
+  KXCPICORE: {release: cpi, key: core_cpi, unit: pct}
+  KXPCECORE: {release: pce, key: core_pce, unit: pct}
+  KXPAYROLLS: {release: nfp, key: nonfarm_payrolls, unit: jobs}
+  KXU3: {release: nfp, key: unemployment_rate, unit: pct}
+  KXGDP: {release: gdp, key: gdp, unit: pct}
+
+cleveland:
+  "CPI Inflation": cpi
+  "Core CPI Inflation": core_cpi
+  "PCE Inflation": pce
+  "Core PCE Inflation": core_pce

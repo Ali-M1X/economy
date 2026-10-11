@@ -535,7 +535,10 @@ with tabs["رژیم‌ها"]:
                    "فازهای این مدل با تاریخ‌گذاری رسمی رکود یکی نیستند.")
 
 with tabs["گزارش‌ها"]:
-    kinds = {"overview": "نمای کلی بازار", "report_btc": "گزارش بیت‌کوین", "report_gold": "گزارش طلا",
+    kinds = {"daily": "گزارش روزانه", "daily-1": "گزارش روزانه (۱)", "daily-2": "گزارش روزانه (۲)",
+             "daily-3": "گزارش روزانه (۳)", "release": "گزارش بعد از انتشار", "release-1": "گزارش بعد از انتشار (۱)",
+             "release-2": "گزارش بعد از انتشار (۲)", "release-3": "گزارش بعد از انتشار (۳)",
+             "prealert": "هشدار پیش از انتشار", "overview": "نمای کلی بازار", "report_btc": "گزارش بیت‌کوین", "report_gold": "گزارش طلا",
              "table_btc": "جدول شاخص‌ها — بیت‌کوین", "table_gold": "جدول شاخص‌ها — طلا", "glossary": "راهنمای اصطلاحات",
              "impact": "گزارش اثر", "signals": "سیگنال‌های عددی", "weekly": "خلاصه هفتگی", "headsup": "هشدار یک روز قبل",
              "health": "هشدار سلامت داده"}
@@ -543,7 +546,7 @@ with tabs["گزارش‌ها"]:
         st.markdown("**آخرین پیام‌های فارسی (همان متن ارسال‌شده به تلگرام)**")
         for kind, html_ in B.messages.items():
             stamp = html_.split("-->", 1)[0].replace("<!--", "").strip() if html_.startswith("<!--") else ""
-            with st.expander(f"{kinds.get(kind, kind)}" + (f" — {fmt_tehran(stamp)}" if stamp else ""), expanded=kind == "overview"):
+            with st.expander(f"{kinds.get(kind, kind)}" + (f" — {fmt_tehran(stamp)}" if stamp else ""), expanded=kind in ("daily", "daily-1")):
                 body = html_.split("-->", 1)[1] if html_.startswith("<!--") else html_
                 body_html = body.strip().replace("\n", "<br>")
                 st.markdown(f'<div dir="rtl">{body_html}</div>', unsafe_allow_html=True)

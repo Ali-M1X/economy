@@ -537,13 +537,71 @@ def analyst_read(name: str, asset: str, x: dict, mv: dict | None, drift: float, 
     return re.sub(r"\s+", " ", out).replace(" .", ".").strip()
 
 
-def asset_advice(f: Facts, asset: str, now: pd.Timestamp) -> str:
+def asset_view(f: Facts, asset: str, now: pd.Timestamp) -> dict:
+    """Everything the advice on one asset is made of (shared by this report and the unified daily report)."""
     name, x = ASSET_FA[asset], f.asset(asset)
     p = x.get("price")
     er = x.get("expected_range") or {}
     sg, drift = er.get("4w_sigma_pct"), er.get("macro_drift_pct") or 0.0
     mv = moves.snapshot_stats(f.root, asset, now)
     r, s = levels(x, mv)
+    ts, tscore = tech_story(name, x.get("technical") or {})
+    forces = macro_forces(f, asset)
+    sound = [(k, e) for k, e, c in forces if not c]
+    odd = [(k, e) for k, e, c in forces if c]
+    sc = scenarios(p, r, s, drift, sg) if p else None
+    evs = upcoming(f, now, days=7)
+    mdir = 1 if drift > 0.05 else -1 if drift < -0.05 else 0
+    bias = tscore + (mdir if sg and abs(drift) >= 0.3 * sg else 0.5 * mdir)
+    stance = 1 if bias >= 1 else -1 if bias <= -1 else 0
+    if stance > 0:
+        hold = f"نگه داشتن منطقی است. حد ضرر ذهنی را زیر {px(s, asset)} بگذار؛ بسته شدن روزانه زیر آن یعنی داستان عوض شده."
+        buy = (f"دنبال قیمت ندو. بهترین ورود، برگشت به نزدیکی {px(s, asset)} و واکنش مثبت در آن‌جاست؛"
+               f" یا تثبیت روزانه بالای {px(r, asset)} برای تأیید ادامه‌ی صعود.")
+    elif stance < 0:
+        hold = (f"روند علیه توست. بخشی را سبک کن یا حد ضرر را نزدیک‌تر بیاور؛ تا وقتی قیمت بالای {px(r, asset)} "
+                "تثبیت نشده، برگشت روند تأیید نمی‌شود.")
+        buy = (f"فعلاً عجله نکن. یا صبر کن قیمت بالای {px(r, asset)} تثبیت شود، یا اگر به {px(s, asset)} رسید و آن‌جا "
+               "نشانه‌ی برگشت داد، با حجم کم وارد شو.")
+    else:
+        hold = f"عجله‌ای برای فروش نیست ولی به موقعیتت اضافه هم نکن. اگر روزانه زیر {px(s, asset)} بسته شد، ریسک را کم کن."
+        buy = (f"صبر کن تا بازار تکلیفش را روشن کند: تثبیت روزانه بالای {px(r, asset)} (تأیید صعود) یا رسیدن به "
+               f"{px(s, asset)} و برگشت از آن. وسط این محدوده، نسبت سود به ضرر خوب نیست.")
+    risk = None
+    if evs:
+        e = evs[0]
+        b = beta(f, e["key"], asset, "24h") if e["key"] else None
+        vol = f"؛ در ۲۴ ساعت بعد از آن، نوسان ±{num(b['sd'], '{:.1f}')}٪ برای {name} عادی است" if b and b.get("sd") else ""
+        risk = f"تا {esc(e['name'])} ({tehran(e['when'])}) حجم موقعیت را کوچک‌تر نگه دار{vol}."
+    ev_name = f"{esc(evs[0]['name'])} ({jdate(evs[0]['when'], year=False)})" if evs else None
+    if stance > 0:
+        tldr = f"زمینه مثبت است؛ نگه دار و برای خرید، منتظر اصلاح تا نزدیکی {px(s, asset)} بمان."
+    elif stance < 0:
+        tldr = f"زمینه منفی است؛ ریسک را کم کن و تا تثبیت بالای {px(r, asset)} عجله‌ای برای خرید نکن."
+    else:
+        tldr = (f"بازار بلاتکلیف است؛ تا شکست یکی از دو سطح {px(s, asset)} یا {px(r, asset)}"
+                f"{' یا انتشار ' + ev_name if ev_name else ''} صبر کن.")
+    read = analyst_read(name, asset, x, mv, drift, sg, sc, r, s, evs[0] if evs else None, bool(odd))
+    conf = "کم" if stance == 0 or not sg or abs(drift) < 0.3 * sg else "متوسط"
+    return {"name": name, "x": x, "price": p, "sg": sg, "drift": drift, "mv": mv, "r": r, "s": s, "tech": ts,
+            "sound": sound, "odd": odd, "sc": sc, "stance": stance, "hold": hold, "buy": buy, "risk": risk,
+            "tldr": tldr, "read": read, "conf": conf, "evs": evs}
+
+
+def watchlist_line(x: dict, asset: str) -> str | None:
+    wl = (x.get("watchlist") or [None])[0]
+    if not wl or not wl.get("entry_zone"):
+        return None
+    why = "، و کلان تأییدش نکرده" if "macro not aligned" in (wl.get("blocked_by") or []) else ""
+    return (f"🔎 سیستم یک ستاپ {'خرید' if wl['direction'] == 'long' else 'فروش'} روی نمودار ۴ ساعته دیده "
+            f"(ورود ≈ {px(min(wl['entry_zone']), asset)}، حد ضرر ≈ {px(wl['stop_loss'], asset)}، هدف ۱ ≈ "
+            f"{px(wl['targets'][0], asset)})؛ اما در آزمون گذشته فقط {prob(wl.get('win_rate') or 0)} برد داشته{why}. "
+            "فقط برای اطلاع، نه پیشنهاد.")
+
+
+def asset_advice(f: Facts, asset: str, now: pd.Timestamp) -> str:
+    v = asset_view(f, asset, now)
+    name, p, mv, r, s, sg, drift, sc = v["name"], v["price"], v["mv"], v["r"], v["s"], v["sg"], v["drift"], v["sc"]
     L = [f"🧭 <b>مشاوره‌ی {TITLE_TAG} — {name}</b>",
          f"قیمت: {px(p, asset)} دلار{' (PAXG، نماینده‌ی طلا)' if asset == 'Gold' else ''}", ""]
 
@@ -553,14 +611,12 @@ def asset_advice(f: Facts, asset: str, now: pd.Timestamp) -> str:
     if mv and mv.get("chg7d") is not None:
         first = (f"{name} در ۷ روز گذشته {pct(mv['chg7d'])} و در ۲۴ ساعت اخیر {pct(mv['chg24'])} تغییر کرده؛ "
                  f"{moves.size_word(mv['chg24'], mv['atr_pct'])} برای یک روز. ")
-    ts, tscore = tech_story(name, x.get("technical") or {})
-    L.append(first + ts)
+    L.append(first + v["tech"])
     if r or s:
         L.append(f"مقاومت نزدیک: {px(r, asset)} · حمایت نزدیک: {px(s, asset)}")
 
     # 2. macro weight
     L += ["", "<b>کلان چقدر وزن دارد؟</b>"]
-    forces = macro_forces(f, asset)
     if sg:
         tilt = "کمی مثبت" if drift > 0.05 else "کمی منفی" if drift < -0.05 else "تقریباً خنثی"
         heavy = abs(drift) >= 0.3 * sg
@@ -568,8 +624,7 @@ def asset_advice(f: Facts, asset: str, now: pd.Timestamp) -> str:
                  f"±{num(sg, '{:.1f}')}٪ است. " +
                  ("یعنی کلان الان عامل مهمی است و نباید خلافش موقعیت گرفت." if heavy else
                   "یعنی کلان فعلاً تعیین‌کننده نیست و قیمت بیشتر از تکنیکال و رویدادهای پیش رو اثر می‌گیرد."))
-    sound = [(k, e) for k, e, c in forces if not c]
-    odd = [(k, e) for k, e, c in forces if c]
+    sound, odd = v["sound"], v["odd"]
     ups, dns = [t for t in sound if t[1] > 0][:3], [t for t in sound if t[1] < 0][:3]
 
     def flist(fs):
@@ -587,7 +642,6 @@ def asset_advice(f: Facts, asset: str, now: pd.Timestamp) -> str:
                  ("؛ بخشی از همان برآیند کلان از همین‌ها می‌آید، پس آن هم کم‌اعتبارتر از ظاهرش است." if same else "."))
 
     # 3. scenarios
-    sc = scenarios(p, r, s, drift, sg) if p else None
     if sc:
         L += ["", "<b>سناریوهای ۴ هفته‌ی آینده</b>",
               f"🟢 بالای {px(r, asset)}: احتمال {prob(sc['up'])}",
@@ -598,52 +652,16 @@ def asset_advice(f: Facts, asset: str, now: pd.Timestamp) -> str:
                  "کفه کمی به سمت صعود است." if sc["higher"] > 0.5 else "کفه کمی به سمت نزول است.")]
 
     # 4. advice
-    evs = upcoming(f, now, days=7)
-    mdir = 1 if drift > 0.05 else -1 if drift < -0.05 else 0
-    bias = tscore + (mdir if sg and abs(drift) >= 0.3 * sg else 0.5 * mdir)
-    stance = 1 if bias >= 1 else -1 if bias <= -1 else 0
-    L += ["", "<b>چه کنم؟</b>"]
-    if stance > 0:
-        hold = f"نگه داشتن منطقی است. حد ضرر ذهنی را زیر {px(s, asset)} بگذار؛ بسته شدن روزانه زیر آن یعنی داستان عوض شده."
-        buy = (f"دنبال قیمت ندو. بهترین ورود، برگشت به نزدیکی {px(s, asset)} و واکنش مثبت در آن‌جاست؛"
-               f" یا تثبیت روزانه بالای {px(r, asset)} برای تأیید ادامه‌ی صعود.")
-    elif stance < 0:
-        hold = (f"روند علیه توست. بخشی را سبک کن یا حد ضرر را نزدیک‌تر بیاور؛ تا وقتی قیمت بالای {px(r, asset)} "
-                "تثبیت نشده، برگشت روند تأیید نمی‌شود.")
-        buy = (f"فعلاً عجله نکن. یا صبر کن قیمت بالای {px(r, asset)} تثبیت شود، یا اگر به {px(s, asset)} رسید و آن‌جا "
-               "نشانه‌ی برگشت داد، با حجم کم وارد شو.")
-    else:
-        hold = f"عجله‌ای برای فروش نیست ولی به موقعیتت اضافه هم نکن. اگر روزانه زیر {px(s, asset)} بسته شد، ریسک را کم کن."
-        buy = (f"صبر کن تا بازار تکلیفش را روشن کند: تثبیت روزانه بالای {px(r, asset)} (تأیید صعود) یا رسیدن به "
-               f"{px(s, asset)} و برگشت از آن. وسط این محدوده، نسبت سود به ضرر خوب نیست.")
-    L.append(f"👤 اگر {name} داری: {hold}")
-    L.append(f"🛒 اگر می‌خواهی بخری: {buy}")
-    wl = (x.get("watchlist") or [None])[0]
-    if wl and wl.get("entry_zone"):
-        why = "، و کلان تأییدش نکرده" if "macro not aligned" in (wl.get("blocked_by") or []) else ""
-        L.append(f"🔎 سیستم یک ستاپ {'خرید' if wl['direction'] == 'long' else 'فروش'} روی نمودار ۴ ساعته دیده "
-                 f"(ورود ≈ {px(min(wl['entry_zone']), asset)}، حد ضرر ≈ {px(wl['stop_loss'], asset)}، هدف ۱ ≈ "
-                 f"{px(wl['targets'][0], asset)})؛ اما در آزمون گذشته فقط {prob(wl.get('win_rate') or 0)} برد داشته{why}. "
-                 "فقط برای اطلاع، نه پیشنهاد.")
-    if evs:
-        e = evs[0]
-        b = beta(f, e["key"], asset, "24h") if e["key"] else None
-        vol = f"؛ در ۲۴ ساعت بعد از آن، نوسان ±{num(b['sd'], '{:.1f}')}٪ برای {name} عادی است" if b and b.get("sd") else ""
-        L.append(f"⚖️ ریسک: تا {esc(e['name'])} ({tehran(e['when'])}) حجم موقعیت را کوچک‌تر نگه دار{vol}.")
-    ev_name = f"{esc(evs[0]['name'])} ({jdate(evs[0]['when'], year=False)})" if evs else None
-    if stance > 0:
-        tldr = f"زمینه مثبت است؛ نگه دار و برای خرید، منتظر اصلاح تا نزدیکی {px(s, asset)} بمان."
-    elif stance < 0:
-        tldr = f"زمینه منفی است؛ ریسک را کم کن و تا تثبیت بالای {px(r, asset)} عجله‌ای برای خرید نکن."
-    else:
-        tldr = (f"بازار بلاتکلیف است؛ تا شکست یکی از دو سطح {px(s, asset)} یا {px(r, asset)}"
-                f"{' یا انتشار ' + ev_name if ev_name else ''} صبر کن.")
-    L.insert(3, f"💡 <b>خلاصه برای تصمیم:</b> {tldr}")
+    L += ["", "<b>چه کنم؟</b>", f"👤 اگر {name} داری: {v['hold']}", f"🛒 اگر می‌خواهی بخری: {v['buy']}"]
+    wl = watchlist_line(v["x"], asset)
+    if wl:
+        L.append(wl)
+    if v["risk"]:
+        L.append(f"⚖️ ریسک: {v['risk']}")
+    L.insert(3, f"💡 <b>خلاصه برای تصمیم:</b> {v['tldr']}")
     L.insert(4, "")
-    read = analyst_read(name, asset, x, mv, drift, sg, sc, r, s, evs[0] if evs else None, bool(odd))
-    L[5:5] = ["<b>برداشت من</b>", read]
-    conf = "کم" if stance == 0 or not sg or abs(drift) < 0.3 * sg else "متوسط"
-    L.append(f"اطمینان این جمع‌بندی: {conf} — سیستم هنوز هیچ قاعده‌ی معاملاتی با برتری اثبات‌شده پیدا نکرده است.")
+    L[5:5] = ["<b>برداشت من</b>", v["read"]]
+    L.append(f"اطمینان این جمع‌بندی: {v['conf']} — سیستم هنوز هیچ قاعده‌ی معاملاتی با برتری اثبات‌شده پیدا نکرده است.")
     return "\n".join(L)
 
 
