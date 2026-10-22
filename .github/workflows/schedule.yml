@@ -200,11 +200,12 @@ jobs:
             state/book_history_BTC.csv
             state/book_history_PAXG.csv
             state/prepos_sent.json
+            state/frontrun_sent.json
           key: mp-state-prepos-${{ github.run_id }}
           restore-keys: mp-state-prepos-
       - name: Live pre-positioning check
         run: python -m jobs.prepos --from-cache snap/cache --state state --refresh-live --live-only snap/prepos.json
-      - name: Telegram (only releases/assets with a proven out-of-sample edge)
+      - name: Telegram (pre-positioning signals with a proven edge; the once-only front-running risk alert)
         run: python -m jobs.notify prepos --root snap --state state
       - uses: actions/upload-artifact@v4
         if: always()
@@ -217,6 +218,7 @@ jobs:
             state/book_history_BTC.csv
             state/book_history_PAXG.csv
             state/prepos_sent.json
+            state/frontrun_sent.json
           key: mp-state-prepos-${{ github.run_id }}-${{ github.run_attempt }}
 
   pipeline:

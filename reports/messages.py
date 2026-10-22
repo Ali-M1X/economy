@@ -155,26 +155,109 @@ def headsup(f: Facts, now: pd.Timestamp) -> str | None:
     return "\n".join(L) + footer()
 
 
-def prerelease(f: Facts, now: pd.Timestamp, events: list[dict]) -> str | None:
-    """Alert shortly before an important release: what is expected, what a surprise would mean, and the reminder that
-    the market can price the release in (front-run it) beforehand — with the system's pre-positioning read."""
-    if not events:
-        return None
+def _main_outlook(f: Facts, events: list[dict], t: pd.Timestamp):
+    """The release that decides the alert (highest importance, then the larger measured shock) and its outlook."""
     from types import SimpleNamespace
 
-    pre = f.prepos.get("live", []) if getattr(f, "prepos", None) else []
+    from reports import daily, outlook
+
+    outs = []
+    for e in events:
+        try:
+            outs.append(outlook.event_outlook(f, SimpleNamespace(**{**e, "scheduled_utc": t})))
+        except Exception as exc:  # noqa: BLE001 — a forecast problem must never block the alert
+            print(f"::warning::outlook for {e.get('event_id')} unavailable: {exc}")
+    return daily.key_event(f, outs) if outs else None
+
+
+def context_line(f: Facts) -> str | None:
+    """Fed funds futures drift and order-book imbalance from the hourly pre-positioning check (prepos.json)."""
+    ctx = (getattr(f, "prepos", None) or {}).get("context") or {}
+    bits = []
+    if ctx.get("zq_drift_24h_bp") is not None:
+        bits.append(f"نرخ ضمنی قراردادهای آتی فدرال {num(ctx['zq_drift_24h_bp'], '{:+.1f}')} واحد پایه در ۲۴ ساعت")
+    for a in ("BTC", "Gold"):
+        imb = (ctx.get(f"book_{a}") or {}).get("imbalance")
+        if imb is not None:
+            bits.append(f"عمق سفارش {ASSET_FA[a]} {num(imb, '{:+.2f}')}")
+    return ("بازار: " + "، ".join(bits) + " (عمق مثبت = خریدار بیشتر)") if bits else None
+
+
+def what_to_do(f: Facts, o, reads: dict) -> str:
+    from reports import daily
+
+    k = daily.impact_key(o)
+    heavy = any(r["verdict"] == "heavily_priced" for r in reads.values())
+    tiers = {(daily.impact_of(f, k, a) or {}).get("tier") for a in ("BTC", "Gold")}
+    if heavy:
+        return "چه کنم: حجم را کم کن و دنبال حرکت پیش از انتشار نرو؛ بخش بزرگی از خبر قیمت شده."
+    if daily.high_fade(f, k):
+        return "چه کنم: حجم را کم کن؛ در ۱۵ دقیقه‌ی اول وارد نشو، حرکت اول اغلب برمی‌گردد."
+    if "volatile_undirected" in tiers:
+        return "چه کنم: حجم را کم کن؛ در ۱۵ دقیقه‌ی اول وارد نشو، تکان بزرگ است ولی جهتش قابل پیش‌بینی نیست."
+    if "volatile_directional" in tiers:
+        hot, _ = daily.hot_words(o.key)
+        return f"چه کنم: جهت این انتشار معمولاً از عدد پیروی می‌کند؛ اگر {hot} آمد، با حجم کوچک و حد ضرر نزدیک."
+    return "چه کنم: تکان این انتشار معمولاً کوچک است؛ نیازی به تغییر موقعیت نیست."
+
+
+def prerelease(f: Facts, now: pd.Timestamp, events: list[dict]) -> str | None:
+    """Alert shortly before an important release, at most 8 lines: forecast and odds, the measured shock and direction,
+    the live front-running read with its history, and what to do. Risk information, not a trade signal."""
+    if not events:
+        return None
+    from reports import daily
+
     t = pd.Timestamp(events[0]["scheduled_utc"])
     mins = max(0, int(round((t - now).total_seconds() / 60)))
-    names = "، ".join(esc(e.get("name_fa") or e["release_id"]) for e in events)
-    L = [f"⏰ <b>هشدار پیش از انتشار — {names}</b>",
-         f"حدود {fa_digits(str(mins))} دقیقه‌ی دیگر منتشر می‌شود ({tehran(t)}).",
-         "⚠️ بازار ممکن است پیش از انتشار جهت را «پیشخور» کند؛ حرکت تند در این فاصله لزوماً ادامه‌دار نیست."]
-    for e in events:
-        L += _event_block(f, SimpleNamespace(**{**e, "scheduled_utc": t}), pre)
-    if not any(r.get("status") == "signal" for r in pre if r["event_id"] in {e["event_id"] for e in events}):
-        L.append("\nهیچ قاعده‌ی پیش‌موقعیت‌گیری برای این انتشار برتری اثبات‌شده ندارد؛ موقعیتی پیشنهاد نمی‌شود.")
-    L.append("بعد از انتشار، گزارش کامل با تغییرات فرستاده می‌شود.")
-    return "\n".join(L) + footer()
+    o = _main_outlook(f, events, t)
+    names = "، ".join(daily.name_of(None, e["release_id"], e.get("name_fa")) for e in events)
+    L = [f"⏰ <b>هشدار پیش از انتشار — {names}</b>", f"حدود {fa_digits(str(mins))} دقیقه‌ی دیگر، {daily.when_fa(t)}."]
+    reads = {}
+    if o is not None:
+        k = daily.impact_key(o)
+        if o.fedwatch:
+            L.append(f"{daily.odds_phrase(o)} (FedWatch).")
+        elif o.forecast is not None:
+            lab = "پیش‌بینی" if o.basis == "consensus" else "انتظار سیستم"
+            L.append(f"{lab} {daily.name_of(o.key, o.release_id)}: {daily.fval(o.key, o.forecast)}؛ {daily.odds_phrase(o)} "
+                     f"({daily.source_short(o)}).")
+        imp = "، ".join(x for x in (daily.shock_clause(f, k), daily.direction_clause(f, k)) if x)
+        if imp:
+            L.append(imp + ".")
+        reads = daily.frontrun(f, k, t, now)
+        fr = daily.frontrun_verdict(reads)
+        if fr:
+            hist = daily.frontrun_history(reads)
+            L.append(f"پیشخور: {fr}." + (f" {hist}." if hist else ""))
+        L.append(what_to_do(f, o, reads))
+    ctx = context_line(f)
+    if ctx and len(L) < 7:
+        L.append(ctx)
+    L.append(DISCLAIMER)
+    return "\n".join(L[:8])
+
+
+def frontrun_alert(f: Facts, now: pd.Timestamp, event: dict, reads: dict) -> str:
+    """Sent once when the pre-release drift passes 2× its usual size 6–24 h before an importance-5 release."""
+    from reports import daily
+
+    t = pd.Timestamp(event["scheduled_utc"])
+    L = [f"⚡ <b>هشدار پیشخور — {daily.name_of(None, event['release_id'], event.get('name_fa'))}</b>",
+         f"انتشار: {daily.when_fa(t)}."]
+    for a, r in reads.items():
+        L.append(f"{ASSET_FA[a]}: {num(r['move_pct'], '{:+.2f}')}٪ از {fa_digits(r['window_h'])} ساعت پیش از انتشار تاکنون، "
+                 f"{daily.pnum(r['ratio'], 1)} برابر پیشخور معمول این انتشار.")
+    hist = daily.frontrun_history(reads)
+    if hist:
+        L.append(hist + ".")
+    ctx = context_line(f)
+    if ctx:
+        L.append(ctx)
+    L.append("این اطلاعات ریسک است، نه سیگنال معامله؛ هیچ قاعده‌ی پیش‌موقعیت‌گیری برتری اثبات‌شده ندارد. "
+             "حجم را کم کن و دنبال حرکت نرو.")
+    L.append(DISCLAIMER)
+    return "\n".join(L)
 
 
 # ───────────────────────────── signal card (used by the per-asset reports) ─────────────────────────────

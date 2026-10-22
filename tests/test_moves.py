@@ -63,9 +63,10 @@ def test_change_arrow_and_impact_cell():
     assert asset_report.change_arrow("+0.3") == "↑" and asset_report.change_arrow("−1.2") == "↓"
     assert asset_report.change_arrow("+0.0") == " " and asset_report.change_arrow("—") == " "
     row = asset_report.Row(key="x", name_fa="x", ticker="X", value="1", change="", surprise="—", coef=-4.0,
-                           coef_tag="w", effect=-1, conf="", x=1.0, against=True)
+                           coef_tag="w", effect=-1, conf="", x=1.0, against=True, measured="0.8%")
     cell = asset_report.impact_cell(row)
-    assert cell.startswith("▼") and cell.endswith("؟")
+    assert cell == "▼ 0.8%؟"  # the measured size replaced the strength word
+    assert asset_report.impact_cell(asset_report.Row(**{**row.__dict__, "measured": ""})) == "—"
 
 
 def test_against_theory_flags_only_real_contradictions(monkeypatch):

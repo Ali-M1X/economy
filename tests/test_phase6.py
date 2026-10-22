@@ -370,8 +370,8 @@ def test_prerelease_alert_and_changes_block(root, tmp_path):
     ev = [{**scheduler.event_from_id("cpi-2026-10-15")}]
     t = pd.Timestamp(ev[0]["scheduled_utc"])
     msg = plain(messages.prerelease(f, t - pd.Timedelta(minutes=60), [{**ev[0], "scheduled_utc": t}]) or "")
-    assert "هشدار پیش از انتشار" in msg and "پیشخور" in msg and "۶۰ دقیقه" in msg and "CPI" in msg
-    assert "بالاتر از انتظار" in msg and "بعد از انتشار" in msg
+    assert "هشدار پیش از انتشار" in msg and "۶۰ دقیقه" in msg and "CPI" in msg and "چه کنم:" in msg
+    assert "انتظار سیستم" in msg and len([x for x in msg.split("\n") if x.strip()]) <= 8
     prev = {"asof": "2026-09-29T05:30:00+00:00",
             "assets": {"BTC": {"price": 80000.0, "scores": {"short": 0.0, "medium": -20.0}},
                        "Gold": {"price": 4000.0, "scores": {"short": 1.0, "medium": 2.0}}}}
@@ -388,7 +388,8 @@ def test_release_report_carries_changes_and_saves_scores(root, tmp_path):
     assert (state / "last_scores.json").exists()
     notify.run("report", root, state, NOW, "انتشار CPI", dry_run=True, changes=True)
     first = sorted((root / "messages").glob("release*.html"))[0].read_text(encoding="utf-8")
-    assert "گزارش بعد از انتشار" in first and "چه تغییر کرد" in first
+    assert "گزارش بعد از انتشار" in first and "چه منتشر شد" in first
+    assert first.find("چه منتشر شد") < first.find("تصمیم امروز")  # the release comes first
     notify.run("prealert", root, state, NOW, None, dry_run=True, events=["cpi-2026-10-15"])
     assert (root / "messages" / "prealert.html").exists()
 
@@ -684,7 +685,7 @@ def test_decision_summary_release_table_for_this_asset(root):
     assert "CPI" in table and "0.42%" in table and "▲" in table
     txt = _plain_text(summary)
     assert "• شاخص قیمت مصرف‌کننده (CPI): بالاتر از انتظار (روند) — تورم داغ‌تر (شگفتی متوسط) → برای بیت‌کوین نزولی" in txt
-    assert "• اثر این انتشار بر بیت‌کوین: نزولی — بر پایه‌ی واکنش قیمت" in txt and "(اثر تاریخی متوسط)" in txt
+    assert "• اثر این انتشار بر بیت‌کوین: نزولی — بر پایه‌ی واکنش قیمت" in txt and "اثر تاریخی متوسط" not in txt
     assert "طلا" not in txt
     # anti-hallucination: every number in the summary is one the system computed
     assert writer.unknown_numbers(_plain_text(summary), writer.asset_facts(f, "BTC")) == []

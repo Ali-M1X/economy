@@ -99,6 +99,10 @@ jobs:
       - name: Phase 3 impact coefficients & macro score
         if: success() || failure()
         run: python -m jobs.impact --from-cache output/cache
+      - name: Real release impact (shock, direction, fade, front-running)
+        if: success() || failure()
+        continue-on-error: true  # the reports fall back to leaving the measured impact out
+        run: python -m jobs.release_impact --from-cache output/cache
       - name: Phase 4 technicals & signals
         if: success() || failure()
         run: python -m jobs.signals --from-cache output/cache

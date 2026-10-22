@@ -413,6 +413,26 @@ def levels(x: dict, mv: dict | None) -> tuple[float | None, float | None]:
     return (min(above) if above else None), (max(below) if below else None)
 
 
+def fallback_levels(p: float | None, r: float | None, s: float | None, x: dict, mv: dict | None):
+    """A missing resistance/support falls back to the 20-day high/low when it lies on the right side of the price, else
+    to the price ± one daily ATR. Returns (r, s, how r was found, how s was found); how is None for a swing level."""
+    r_how = s_how = None
+    if p is None:
+        return r, s, r_how, s_how
+    atr = ((x.get("technical") or {}).get("1d") or {}).get("atr") or (p * mv["atr_pct"] / 100 if mv and mv.get("atr_pct") else None)
+    if s is None:
+        if mv and mv.get("lo") and mv["lo"] < p:
+            s, s_how = mv["lo"], "کف ۲۰ روزه"
+        elif atr:
+            s, s_how = p - atr, "یک نوسان روزانه پایین‌تر"
+    if r is None:
+        if mv and mv.get("hi") and mv["hi"] > p:
+            r, r_how = mv["hi"], "سقف ۲۰ روزه"
+        elif atr:
+            r, r_how = p + atr, "یک نوسان روزانه بالاتر"
+    return r, s, r_how, s_how
+
+
 def scenarios(p: float, r: float | None, s: float | None, drift_pct: float, sigma_pct: float) -> dict | None:
     """End-of-4-weeks probabilities above the resistance, below the support and in between (log-normal)."""
     if not r or not s or not sigma_pct:
@@ -545,6 +565,7 @@ def asset_view(f: Facts, asset: str, now: pd.Timestamp) -> dict:
     sg, drift = er.get("4w_sigma_pct"), er.get("macro_drift_pct") or 0.0
     mv = moves.snapshot_stats(f.root, asset, now)
     r, s = levels(x, mv)
+    r, s, r_how, s_how = fallback_levels(p, r, s, x, mv)
     ts, tscore = tech_story(name, x.get("technical") or {})
     forces = macro_forces(f, asset)
     sound = [(k, e) for k, e, c in forces if not c]
@@ -584,6 +605,7 @@ def asset_view(f: Facts, asset: str, now: pd.Timestamp) -> dict:
     read = analyst_read(name, asset, x, mv, drift, sg, sc, r, s, evs[0] if evs else None, bool(odd))
     conf = "کم" if stance == 0 or not sg or abs(drift) < 0.3 * sg else "متوسط"
     return {"name": name, "x": x, "price": p, "sg": sg, "drift": drift, "mv": mv, "r": r, "s": s, "tech": ts,
+            "r_how": r_how, "s_how": s_how, "tscore": tscore,
             "sound": sound, "odd": odd, "sc": sc, "stance": stance, "hold": hold, "buy": buy, "risk": risk,
             "tldr": tldr, "read": read, "conf": conf, "evs": evs}
 

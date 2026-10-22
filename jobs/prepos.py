@@ -191,6 +191,11 @@ def live_context(cache: Path, state: Path | None, now: pd.Timestamp) -> dict:
             front, nxt = q.iloc[0], q.iloc[min(1, len(q) - 1)]
             out["zq"] = append_state(state, "zq_history.csv", {"ts": now.isoformat(), "front": front["implied_rate"],
                                                                "next": nxt["implied_rate"], "contract": nxt["contract"]})
+            # change of the implied rate of the next contract (bp), from the stored hourly history
+            for h in (24, 48):
+                d = drift_since(out["zq"], "next", now - pd.Timedelta(hours=h))
+                if d is not None and np.isfinite(d):
+                    out[f"zq_drift_{h}h_bp"] = round(d * 100, 1)
     for asset, sym in ASSETS.items():
         p = cache / f"orderbook_{sym}.csv"
         if p.exists():

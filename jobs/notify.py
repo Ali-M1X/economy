@@ -121,6 +121,40 @@ def wait_for_daily_slot(now: pd.Timestamp, sleep=time.sleep) -> None:
         sleep(left)
 
 
+FRONTRUN_RATIO = 2.0
+FRONTRUN_WINDOW = (pd.Timedelta(hours=6), pd.Timedelta(hours=24))
+
+
+def frontrun_alerts(f, now: pd.Timestamp, state: Path | None, dry_run: bool, root: Path) -> int:
+    """Once per release: the pre-release drift passed FRONTRUN_RATIO× its usual size 6–24 h before an importance-5
+    release (state/frontrun_sent.json keeps what was sent)."""
+    from reports import outlook
+
+    c = f.calendar
+    if c is None or c.empty:
+        return 0
+    sent = set(_state_json(state, "frontrun_sent.json").get("ids", []))
+    lo, hi = FRONTRUN_WINDOW
+    due = c[(c["importance"] >= 5) & (c["scheduled_utc"] - now >= lo) & (c["scheduled_utc"] - now <= hi)]
+    n = 0
+    for e in due.drop_duplicates("event_id").itertuples():
+        if e.event_id in sent:
+            continue
+        o = outlook.event_outlook(f, e)
+        reads = daily.frontrun(f, daily.impact_key(o), e.scheduled_utc, now)
+        big = {a: r for a, r in reads.items() if r["ratio"] >= FRONTRUN_RATIO}
+        if not big:
+            continue
+        ev = {"event_id": e.event_id, "release_id": e.release_id, "name_fa": getattr(e, "name_fa", None),
+              "scheduled_utc": e.scheduled_utc}
+        _send(messages.frontrun_alert(f, now, ev, big), "frontrun", dry_run, root)
+        sent.add(e.event_id)
+        n += 1
+    _save_state(state, "frontrun_sent.json", {"ids": sorted(sent)[-200:]})
+    print(f"front-running: {n} alert(s) sent")
+    return n
+
+
 def run(mode: str, root: Path, state: Path | None, now: pd.Timestamp, trigger: str | None, dry_run: bool,
         events: list[str] | None = None, changes: bool = False) -> int:
     f = facts_mod.load(root)
@@ -200,6 +234,7 @@ def run(mode: str, root: Path, state: Path | None, now: pd.Timestamp, trigger: s
         _save_state(state, "prepos_sent.json", {"keys": sorted(sent)[-300:]})
         blocked = sum(1 for r in rows if r.get("status") == "watchlist")
         print(f"prepos: {n} alert(s) sent; {blocked} setup(s) blocked by the edge gate (dashboard only)")
+        frontrun_alerts(f, now, state, dry_run, root)
         return 0
     raise SystemExit(f"unknown mode {mode}")
 

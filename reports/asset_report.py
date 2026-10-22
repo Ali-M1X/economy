@@ -141,6 +141,8 @@ class Row:
     conf: str          # high|medium|low|""
     x: float | None    # the move used for the effect (state or surprise z)
     against: bool = False  # the coefficient's sign contradicts the economic prior (likely a recent, unstable link)
+    measured: str = ""     # measured size: "2.0x" = 1-hour shock after a release vs a normal hour; "0.8%" = usual
+                           # 4-week move per 1σ change of the indicator
 
 
 def _series(f: Facts, key: str) -> pd.Series:
@@ -269,6 +271,22 @@ def against_theory(key: str, asset: str, coef: float | None, section: str) -> bo
     return bool(coef is not None and th and abs(coef) >= 1 and np.sign(coef) != th)
 
 
+def shock_ratio(f: Facts, key: str, asset: str) -> float | None:
+    """1-hour shock after the release ÷ a normal hour (models.release_impact), if measured."""
+    m = ((((f.impact or {}).get("releases") or {}).get(key) or {}).get("assets") or {}).get(asset) or {}
+    return ((m.get("shock") or {}).get("1h") or {}).get("ratio")
+
+
+def measured_size(f: Facts, key: str, asset: str, release: bool) -> str:
+    """The measured size that replaces the old strength word: '2.0x' (release shock) or '0.8%' (4-week move per 1σ)."""
+    if release:
+        r = shock_ratio(f, key, asset)
+        return f"{r:.1f}x" if r is not None else ""
+    c = f.coef(key, asset, "4w") or {}
+    b = c.get("beta")
+    return f"{abs(b):.1f}%" if b is not None and np.isfinite(b) else ""
+
+
 def indicator_rows(f: Facts, asset: str) -> list[Row]:
     cfg = indicators_cfg()
     rels = {r["key"]: r for r in cfg["releases"]}
@@ -294,7 +312,8 @@ def indicator_rows(f: Facts, asset: str) -> list[Row]:
         value, change = _value_change(f, key, rels.get(key), states.get(key), meta)
         ticker = SHORT.get(key) or (meta.source_id if meta else key).lstrip("^")[:5]
         rows.append(Row(key, ind_name(key), ticker, value, change, surprise, k, "w" if in_state else "d", eff,
-                        conf, x, against_theory(key, asset, k, "state" if in_state else "release")))
+                        conf, x, against_theory(key, asset, k, "state" if in_state else "release"),
+                        measured_size(f, key, asset, not in_state)))
     return sorted(rows, key=lambda r: -abs(r.coef) if r.coef is not None else 1)
 
 
@@ -376,13 +395,6 @@ def release_line(r: dict) -> str:
 
 # ───────────────────────────── indicator table (sorted by next update) ─────────────────────────────
 
-def impact_word(k: float | None) -> str:
-    if k is None or not np.isfinite(k):
-        return "—"
-    a = abs(k)
-    return "ناچیز" if a < 1 else "ضعیف" if a < 3 else "متوسط" if a < 6 else "قوی"
-
-
 def next_updates(f: Facts, now: pd.Timestamp) -> dict[str, pd.Timestamp]:
     """Next scheduled release of each series, from the snapshot calendar (collectors.calendar.upcoming())."""
     c = f.calendar
@@ -426,11 +438,11 @@ def change_arrow(change: str) -> str:
 
 
 def impact_cell(r: Row) -> str:
-    """'▲ متوسط' = pushing the price up now, with a medium historical effect; '؟' = against the economic prior."""
-    w = impact_word(r.coef)
-    if w in ("—", "ناچیز"):
-        return w
-    return f"{ {1: '▲', -1: '▼', 0: '·'}[r.effect]} {w}{'؟' if r.against else ''}"
+    """'▲ 2.0x' = pushing the price up now; the number is the measured size (release shock vs a normal hour, or the
+    usual 4-week move per 1σ); '؟' = the link contradicts the economic prior."""
+    if not r.measured:
+        return "—"
+    return f"{ {1: '▲', -1: '▼', 0: '·'}[r.effect]} {r.measured}{'؟' if r.against else ''}"
 
 
 def indicator_table(trs: list[TableRow], now: pd.Timestamp) -> list[str]:
@@ -452,7 +464,8 @@ def names_key(rows: list[Row]) -> str:
 
 TABLE_LEGEND = ("• Value = آخرین عدد شاخص؛ ↑↓ = بالاتر/پایین‌تر از دفعه‌ی قبل (برای بازده‌ها و بازارها: نسبت به ۴ هفته پیش)\n"
                 "• Impact = اثر همین الان این شاخص بر قیمت: ▲ به نفع افزایش، ▼ به نفع کاهش، · بی‌اثر؛ "
-                "کلمه = قدرت این اثر در گذشته (ضعیف، متوسط، قوی)؛ ؟ = برخلاف منطق اقتصادی، کم‌اعتبار\n"
+                "عدد با x = تکان واقعی ساعت اول بعد از انتشار، چند برابر یک ساعت عادی؛ عدد با ٪ = حرکت معمول ۴ هفته‌ای "
+                "به‌ازای یک واحد تغییر عادی شاخص؛ ؟ = برخلاف منطق اقتصادی، کم‌اعتبار\n"
                 "• Next = تاریخ انتشار بعدی")
 
 
@@ -584,8 +597,11 @@ def upcoming_events(f: Facts, asset: str, now: pd.Timestamp, days: int = 7, n: i
         r = rel.get(e.release_id, {})
         ks = [v for v in (_coef(f, k, asset, "24h")[0] for k in r.get("series_keys", []) if k in rcfg) if v is not None]
         line = f"{esc(r.get('name_fa', e.release_id))} — {tehran(e.scheduled_utc)}"
-        if ks:
-            line += f" (اثر تاریخی: {impact_word(max(ks, key=abs))})"
+        ratios = [x for x in (shock_ratio(f, k, asset) for k in r.get("series_keys", []) + [e.release_id]) if x]
+        if ratios:
+            line += f" (تکان ساعت اول معمولاً {num(max(ratios), '{:.1f}')} برابر یک ساعت عادی)"
+        elif ks:
+            line += " (اثر تاریخی اندازه‌گیری نشده)"
         out.append(line)
     return out
 
@@ -733,8 +749,9 @@ def decision_summary(f: Facts, asset: str, now: pd.Timestamp, trigger: str | Non
     if top:
         r, k = top["r"], top["k"]
         eff = "صعودی" if k * r["z"] > 0 else "نزولی"
-        L.append(f"• اثر این انتشار بر {name}: {eff} — بر پایه‌ی واکنش قیمت در ۲۴ ساعت پس از انتشارهای گذشته "
-                 f"(اثر تاریخی {impact_word(k)})")
+        sr = shock_ratio(f, r["indicator"], asset)
+        L.append(f"• اثر این انتشار بر {name}: {eff} — بر پایه‌ی واکنش قیمت در ۲۴ ساعت پس از انتشارهای گذشته"
+                 + (f" (تکان ساعت اول معمولاً {num(sr, '{:.1f}')} برابر یک ساعت عادی)" if sr else ""))
     elif not rels and news and news[0].get("effect") in ("bullish", "bearish"):
         L.append(f"• اثر بر {name}: {'صعودی' if news[0]['effect'] == 'bullish' else 'نزولی'} (طبقه‌بندی خودکار تیتر)")
     mv = moves.snapshot_stats(f.root, asset, now)
