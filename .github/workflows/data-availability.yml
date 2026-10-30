@@ -106,6 +106,10 @@ jobs:
       - name: Phase 4 technicals & signals
         if: success() || failure()
         run: python -m jobs.signals --from-cache output/cache
+      - name: Track record (does the trend call come true?)
+        if: success() || failure()
+        continue-on-error: true  # the report simply leaves the track-record line out
+        run: python -m jobs.track_record --from-cache output/cache
       - name: Restore Binance futures archive (open interest, funding history)
         uses: actions/cache/restore@v4
         with:

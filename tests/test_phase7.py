@@ -22,7 +22,7 @@ def names(steps):
 def test_pipeline_steps_per_mode(tmp_path, monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     none = pipeline.steps("none", "", "", tmp_path, tmp_path / "state")
-    assert names(none) == ["collect + validate", "features", "impact", "signals", "pre-positioning", "health"]
+    assert names(none) == ["collect + validate", "features", "impact", "signals", "track record", "pre-positioning", "health"]
     rel = pipeline.steps("release", "cpi-2026-10-15", "انتشار CPI", tmp_path, tmp_path / "state")
     assert names(rel)[0] == "wait for new values" and names(rel)[-1] == "mark reported"
     assert "classify" in names(rel) and "telegram" in names(rel)

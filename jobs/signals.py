@@ -90,12 +90,12 @@ def context_levels(bars: pd.DataFrame, cache: Path, cfg: dict, price: float) -> 
 
 def expected_range(bars: pd.DataFrame, macro: float | None) -> dict:
     """Probable ranges: 1 day from daily ATR; 4 weeks from realized volatility, centred on a macro drift of
-    (score/100) × 0.5σ (the Macro Score shifts the centre, never the width)."""
+    (score/100) × 0.5σ; σ = 90-day daily σ × √28 (the Macro Score shifts the centre, never the width)."""
     d1 = resample(bars, "1d")
     price = float(bars["close"].iloc[-1])  # centre on the latest price, not the last daily close
     a = float(atr(d1).iloc[-1])
     ret = np.log(d1["close"]).diff().dropna().tail(90)
-    sig = float(ret.std() * np.sqrt(20))
+    sig = float(ret.std() * np.sqrt(28))  # 4 weeks of 24/7 daily bars; sqrt(20) understated it (range held 49-61% not 68%)
     drift = (macro or 0) / 100 * 0.5 * sig
     return {"1d": [round(price - a, 2), round(price + a, 2)],
             "4w_1sigma": [round(float(price * np.exp(drift - sig)), 2), round(float(price * np.exp(drift + sig)), 2)],

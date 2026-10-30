@@ -229,3 +229,22 @@ def test_a_rewrite_with_an_invented_number_never_reaches_the_report(root, monkey
     monkeypatch.setattr(free_writer, "chat", lambda s, u, **k: (u + " احتمال رسیدن به 12345 دلار زیاد است.", "m"))
     msgs = daily.build(facts_mod.load(root), NOW)
     assert "12345" not in "".join(msgs) and "تصمیم امروز" in _plain(msgs[0])
+
+
+def test_decision_labels_a_lean_without_edge_and_the_track_line_says_so(root_impact):
+    f = facts_mod.load(root_impact)
+    f.track = {"assets": {"BTC": {"hit": {"7d": {"n": 66, "hit": 0.515, "chance": 0.507, "p": 0.5, "edge": False}}},
+                          "Gold": {"hit": {"7d": {"n": 74, "hit": 0.676, "chance": 0.543, "p": 0.01, "edge": True}}}}}
+    t = _plain("\n".join(daily.build(f, NOW)))
+    assert "تقریباً شانسی" in t and "بهتر از شانس" in t and "کارنامه‌ی جهت روند" in t
+    btc = next(x for x in t.splitlines() if x.startswith("• بیت‌کوین:"))
+    gold = next(x for x in t.splitlines() if x.startswith("• طلا:"))
+    assert ("اطمینان کم" in btc) and ("اطمینان کم" not in gold)
+    f.track = {}
+    assert "کارنامه‌ی جهت روند" not in _plain("\n".join(daily.build(f, NOW)))
+
+
+def test_in_line_prints_are_left_out_of_the_numbers_section(root_impact):
+    f = facts_mod.load(root_impact)
+    f.surprises = {"core_cpi": {**next(iter(f.surprises.values())), "z": 0.1, "release_utc": NOW.isoformat()}}
+    assert daily.facts_section(f, NOW, []) is None

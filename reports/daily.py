@@ -34,8 +34,8 @@ from reports.messages import ASSET_FA, DISCLAIMER, num
 TARGET_CHARS = 2800
 MAX_CHARS = LIMIT - 96
 ICON = {"BTC": "₿", "Gold": "🥇"}
-FACT_LINES = 4
-EVENT_LINES = 3
+FACT_LINES = 3
+EVENT_LINES = 2
 RECENT_DAYS = 7
 INDEX_KEYS = ("philly_fed_activity", "empire_state_activity")
 # Persian name first, ticker in parentheses (a line must start with a Persian letter)
@@ -114,7 +114,7 @@ def shock_clause(f: Facts, key: str | None, short: bool = False) -> str | None:
         if s.get("median_abs") is None:
             continue
         parts.append(f"{ASSET_FA[a]} ±{pnum(s['median_abs'], 2)}٪")
-        if s.get("ratio"):
+        if s.get("ratio") and s["ratio"] >= 1.8:  # only a clearly bigger-than-normal hour is worth saying
             ratios.append(pnum(s["ratio"], 1))
     if not parts:
         return None
@@ -306,17 +306,16 @@ def fact_line(f: Facts, key: str) -> str | None:
     if key == "unemployment_rate" and prev is not None:
         prev_s = f" (قبلی {pnum(prev, 1)}٪)"
     return (f"• {name_of(key)} — {jdate_short(s['release_utc'])}: {print_sentence(key, a, s.get('obs_date'))}{cmp_}"
-            f"{prev_s}. {meaning(key, a, e, z)}.")
+            f"{prev_s}.\n   ↳ {meaning(key, a, e, z)}.")
 
 
 def facts_section(f: Facts, now: pd.Timestamp, outs: list[ol.EventOutlook]) -> str | None:
     recent = sorted(((k, s) for k, s in (f.surprises or {}).items()
                      if now - pd.Timestamp(s["release_utc"]) <= pd.Timedelta(days=RECENT_DAYS)),
                     key=lambda kv: kv[1]["release_utc"], reverse=True)
-    keys = [k for k, _ in recent]
-    keys += [o.key for o in outs if o.key and o.key in (f.surprises or {}) and o.key not in keys]
+    keys = [k for k, sv in recent if sv.get("z") is not None and abs(sv["z"]) >= 0.5]  # in-line prints change nothing
     lines = [x for x in (fact_line(f, k) for k in keys[:FACT_LINES]) if x]
-    return "\n".join(["📊 <b>اعداد نهایی (اخیر و پیش رو)</b>", *lines]) if lines else None
+    return "\n".join(["📊 <b>اعداد منتشرشده‌ی ۷ روز اخیر</b>", *lines]) if lines else None
 
 
 # ───────────────────────────── 📅 ahead ─────────────────────────────
@@ -325,21 +324,21 @@ def event_line(f: Facts, o: ol.EventOutlook, now: pd.Timestamp, skip_impact: boo
     """skip_impact: the decision block already gave this release's shock and direction (each fact once)."""
     k = impact_key(o)
     if o.fedwatch:
-        parts = [f"{odds_phrase(o)} (FedWatch)"]
+        head = f"{odds_phrase(o)}"
     elif o.forecast is not None:
         lab = "پیش‌بینی" if o.basis == "consensus" else "انتظار سیستم"
         src = source_short(o)
-        head = f"{lab} {fval(o.key, o.forecast)}" + (f" ({src})" if src != lab else "")
-        parts = [head + (f"، {odds_phrase(o)}" if o.odds else "")]
+        head = f"{lab} {fval(o.key, o.forecast)}" + (f" ({src})" if src != lab else "") + (f"؛ {odds_phrase(o)}" if o.odds else "")
     else:
-        parts = ["پیش‌بینی در دسترس نیست"]
-    for c in (() if skip_impact else (shock_clause(f, k), direction_clause(f, k))):
+        head = "پیش‌بینی در دسترس نیست"
+    lines = [f"• <b>{name_of(o.key, o.release_id, o.name_fa)}</b> {when_fa(o.when)}: {head}"]
+    for c in (() if skip_impact else (shock_clause(f, k, short=True), direction_clause(f, k))):
         if c:
-            parts.append(c)
+            lines.append(f"   ↳ {c}")
     fr = frontrun_verdict(frontrun(f, k, o.when, now))
     if fr:
-        parts.append(f"پیشخور: {fr}")
-    return f"• <b>{name_of(o.key, o.release_id, o.name_fa)}</b> {when_fa(o.when)}: " + " · ".join(parts)
+        lines.append(f"   ↳ پیشخور: {fr}")
+    return "\n".join(lines)
 
 
 def ahead_section(f: Facts, now: pd.Timestamp, outs: list[ol.EventOutlook], key: ol.EventOutlook | None = None) -> str:
@@ -361,15 +360,39 @@ def key_event(f: Facts, outs: list[ol.EventOutlook]) -> ol.EventOutlook | None:
 
 # ───────────────────────────── 🎯 decision and assets ─────────────────────────────
 
-def decision_line(v: dict, asset: str) -> str:
+def trend_edge(f: Facts, asset: str) -> dict | None:
+    """The replayed 7-day hit rate of the trend call (models.track_record), or None when it wasn't measured."""
+    h = (((f.track or {}).get("assets") or {}).get(asset) or {}).get("hit") or {}
+    return h.get("7d") if (h.get("7d") or {}).get("hit") is not None else None
+
+
+def decision_line(v: dict, asset: str, edge: dict | None = None) -> str:
+    """bias — action; invalidation. A lean from a trend call that has not beaten chance is labelled low-confidence."""
     s, r = adv.px(v["s"], asset), adv.px(v["r"], asset)
+    weak = " (اطمینان کم)" if edge is not None and not edge.get("edge") else ""
     if v["stance"] > 0:
-        bias, act, stop = "تمایل صعودی", "نگه دار؛ برای خرید منتظر اصلاح بمان", f"ابطال زیر {s}"
+        bias, act, stop = "تمایل صعودی" + weak, "نگه دار؛ برای خرید منتظر اصلاح بمان", f"ابطال زیر {s}"
     elif v["stance"] < 0:
-        bias, act, stop = "تمایل نزولی", "ریسک را کم کن؛ فعلاً نخر", f"ابطال بالای {r}"
+        bias, act, stop = "تمایل نزولی" + weak, "ریسک را کم کن؛ فعلاً نخر", f"ابطال بالای {r}"
     else:
-        bias, act, stop = "بی‌جهت", f"صبر تا شکست {s} یا {r}", f"ابطال زیر {s}"
+        bias, act, stop = "جهت روشن نیست", f"صبر تا شکست {s} یا {r}", f"ابطال زیر {s}"
     return f"• {ASSET_FA[asset]}: {bias} — {act}؛ {stop}"
+
+
+def track_line(f: Facts) -> str | None:
+    """How often the trend lean was right over the last two years, replayed on past candles."""
+    bits = []
+    for a in ("BTC", "Gold"):
+        e = trend_edge(f, a)
+        if not e:
+            continue
+        good = e.get("edge")
+        bits.append(f"{ASSET_FA[a]} {adv.prob(e['hit'])} از {fa_digits(e['n'])} مورد درست بوده، شانس {adv.prob(e['chance'])} "
+                    f"({'بهتر از شانس' if good else 'تقریباً شانسی'})")
+    if not bits:
+        return None
+    note = "\nهرجا «تقریباً شانسی» است، به سطح ابطال تکیه کن، نه به جهت." if any("شانسی" in b for b in bits) else ""
+    return "📈 <b>کارنامه‌ی جهت روند (۷ روز بعد، ۲ سال اخیر)</b>\n" + "\n".join(f"• {b}" for b in bits) + note
 
 
 def asset_sentences(v: dict) -> str:
@@ -396,8 +419,8 @@ def asset_sentences(v: dict) -> str:
         b = (f"کلان {'به نفع' if drift > 0 else 'علیه'} {v['name']} است ({num(drift, '{:+.1f}')}٪ در ۴ هفته در برابر "
              f"نوسان عادی ±{pnum(sg, 1)}٪)")
     else:
-        b = "کلان وزن تعیین‌کننده‌ای ندارد، پس تصمیم را سطح‌های قیمت و رویداد پیش رو می‌گیرند"
-    return f"{a}. {b}."
+        b = ""  # macro without weight is left out: it changes no decision
+    return f"{a}.\n{b}." if b else f"{a}."
 
 
 def levels_line(v: dict, asset: str) -> str:
@@ -406,7 +429,7 @@ def levels_line(v: dict, asset: str) -> str:
     out = f"سطح‌ها: حمایت {s} · مقاومت {r}"
     sc = v["sc"]
     if sc:
-        out += f" · ۴ هفته: بالای مقاومت {adv.prob(sc['up'])} / زیر حمایت {adv.prob(sc['down'])}"
+        out += f"\nتا ۴ هفته‌ی دیگر: بالای مقاومت رفتن {adv.prob(sc['up'])}، زیر حمایت رفتن {adv.prob(sc['down'])}"
     return out
 
 
@@ -561,7 +584,7 @@ def build(f: Facts, now: pd.Timestamp, changes: list[str] | None = None, trigger
         rs = released_section(f, now)
         if rs:
             sections.append(rs)
-    dec = ["🎯 <b>تصمیم امروز</b>", *[decision_line(v, a) for a, v in views.items()]]
+    dec = ["🎯 <b>تصمیم امروز</b>", *[decision_line(v, a, trend_edge(f, a)) for a, v in views.items()]]
     ke = key_event(f, outs)
     if ke:
         clause = shock_clause(f, impact_key(ke), short=True)
@@ -574,7 +597,7 @@ def build(f: Facts, now: pd.Timestamp, changes: list[str] | None = None, trigger
     ahead = ahead_section(f, now, outs, ke)
     assets = [asset_section(v, a, polish(asset_sentences(v)) if rewrite else asset_sentences(v)) for a, v in views.items()]
     tail = DISCLAIMER
-    body = [fs, ahead, *assets, tail]
+    body = [fs, ahead, *assets, track_line(f), tail]
     # keep a normal day to one short message: drop the oldest fact lines first, then the third event line
     msg = "\n\n".join(x for x in sections + body if x)
     while not post and len(msg) > TARGET_CHARS and fs and fs.count("\n") > 1:
