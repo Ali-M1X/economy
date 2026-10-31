@@ -31,7 +31,7 @@ from reports import outlook as ol
 from reports.facts import Facts, indicators_cfg
 from reports.messages import ASSET_FA, DISCLAIMER, num
 
-TARGET_CHARS = 2800
+TARGET_CHARS = 3300
 MAX_CHARS = LIMIT - 96
 ICON = {"BTC": "₿", "Gold": "🥇"}
 FACT_LINES = 3
@@ -240,21 +240,27 @@ def _measures(f: Facts, key: str) -> pd.Series:
     return ar._measure(ar._series(f, key), rc["measure"]).dropna()
 
 
-def meaning(key: str, actual: float, prev: float | None) -> str:
-    """What the print says, from the number itself and the previous print (no forecast): arithmetic and the Fed's 2 % goal."""
+def meaning(key: str, actual: float, prev: float | None, forecast: float | None = None) -> str:
+    """What the print says: against the published forecast, against the previous print, and (inflation) the
+    annualised pace against the Fed's 2 % goal. Every number is computed here."""
     parts = []
+    if forecast is not None:
+        d = actual - forecast
+        parts.append("برابر پیش‌بینی" if abs(d) < 1e-9 else "بیشتر از پیش‌بینی" if d > 0 else "کمتر از پیش‌بینی")
+    if prev is not None:
+        d = actual - prev
+        parts.append("برابر ماه قبل" if abs(d) < 1e-9 else "بالاتر از قبلی" if d > 0 else "پایین‌تر از قبلی")
     if key in INFLATION_MOM and key != "ppi_final_demand":
         ann = ((1 + actual / 100) ** 12 - 1) * 100
         s = f"اگر هر ماه همین‌قدر ادامه یابد، تورم سالانه حدود {pnum(ann, 1)}٪ می‌شود"
         if ann > 0:
             k = ann / PCE_TARGET
-            s += (f"، {pnum(k, 1)} برابر هدف ۲٪ فدرال" if k >= 1.2 else "، نزدیک هدف ۲٪ فدرال" if k >= 0.8
-                  else "، زیر هدف ۲٪ فدرال")
+            s += (f"، یعنی {pnum(k, 1)} برابر هدف ۲٪ فدرال" if k >= 1.2 else "، یعنی نزدیک هدف ۲٪ فدرال" if k >= 0.8
+                  else "، یعنی زیر هدف ۲٪ فدرال")
         parts.append(s)
-    if prev is not None:
-        d = actual - prev
-        parts.append("برابر ماه قبل" if abs(d) < 1e-9 else "بالاتر از قبلی" if d > 0 else "پایین‌تر از قبلی")
-    return "؛ ".join(parts) or "بدون مقایسه با قبلی"
+    cmp_ = [x for x in parts if not x.startswith("اگر")]
+    ann_ = [x for x in parts if x.startswith("اگر")]
+    return ".\n   ↳ ".join(x for x in ("، ".join(cmp_), *ann_) if x) or "بدون مقایسه با قبلی"
 
 
 def print_sentence(key: str, actual: float, obs_month: str | None) -> str:
@@ -278,33 +284,82 @@ def print_sentence(key: str, actual: float, obs_month: str | None) -> str:
 
 
 def fact_line(f: Facts, key: str) -> str | None:
+    """Actual, the published forecast (analyst consensus, when one was stored before the release) and the previous print."""
     s = (f.surprises or {}).get(key)
     if not s or s.get("actual") is None:
         return None
     a = s["actual"]
+    fc = s.get("expected") if s.get("basis") == "vs consensus" else None
     ms = _measures(f, key)
     prev = float(ms.iloc[-2]) if len(ms) >= 2 else None
-    prev_s = f"؛ قبلی {fval(key, prev)}" if prev is not None else ""
-    return (f"• {name_of(key)} — {jdate_short(s['release_utc'])}: {print_sentence(key, a, s.get('obs_date'))}"
-            f"{prev_s}.\n   ↳ {meaning(key, a, prev)}.")
+    nums = [f"منتشرشده {fval(key, a)}"]
+    if fc is not None:
+        nums.append(f"پیش‌بینی {fval(key, fc)}")
+    if prev is not None:
+        nums.append(f"قبلی {fval(key, prev)}")
+    return (f"• <b>{name_of(key)}</b> ({jdate_short(s['release_utc'])})\n"
+            f"   ↳ {print_sentence(key, a, s.get('obs_date'))}.\n"
+            f"   ↳ {' · '.join(nums)}\n"
+            f"   ↳ {meaning(key, a, prev, fc)}.")
 
 
 def facts_section(f: Facts, now: pd.Timestamp, outs: list[ol.EventOutlook]) -> str | None:
     recent = sorted(((k, s) for k, s in (f.surprises or {}).items()
                      if now - pd.Timestamp(s["release_utc"]) <= pd.Timedelta(days=RECENT_DAYS)),
                     key=lambda kv: kv[1]["release_utc"], reverse=True)
-    keys = [k for k, _ in recent]
-    lines = [x for x in (fact_line(f, k) for k in keys[:FACT_LINES]) if x]
-    return "\n".join(["📊 <b>اعداد منتشرشده‌ی ۷ روز اخیر (بدون پیش‌بینی)</b>", *lines]) if lines else None
+    lines = [x for x in (fact_line(f, k) for k, _ in recent[:FACT_LINES]) if x]
+    return "\n\n".join(["📊 <b>اعداد منتشرشده‌ی ۷ روز اخیر</b>", *lines]) if lines else None
 
 
 # ───────────────────────────── 📅 ahead ─────────────────────────────
 
+def market_line(f: Facts, key: str, pts: list) -> str | None:
+    """What the Kalshi market prices for the print: where its median sits, and the odds of a print above the last one."""
+    from models import forecast as fm
+
+    med = fm.market_median(pts)
+    if not med:
+        return None
+    lo, hi = med
+    fine = hi - lo <= 0.1 + 1e-9
+    a_, b_ = fval(key, lo), fval(key, hi)
+    sa, sb = a_.split(" ", 1), b_.split(" ", 1)
+    lo_s = sa[0] if len(sa) == 2 and len(sb) == 2 and sa[1] == sb[1] else a_
+    where = f"حدود {b_}" if fine else f"بین {lo_s} و {b_}"
+    out = f"بازار Kalshi برای {name_of(key)}: {where}"
+    ms = _measures(f, key)
+    if fine and len(ms):
+        prev = round(float(ms.iloc[-1]), 1)
+        at = [p for s_, p in pts if abs(s_ - prev) < 1e-6]
+        if at:
+            out += f"؛ احتمال بالاتر از قبلی ({fval(key, prev)}) {adv.prob(at[0])}"
+    return out
+
+
+def forecast_phrase(f: Facts, o: ol.EventOutlook) -> list[str]:
+    """Published forecasts only: analyst consensus, the Fed nowcasts, market-priced numbers (Kalshi, FedWatch)."""
+    if o.fedwatch:
+        return [odds_phrase(o)]
+    bits = []
+    if o.forecast is not None and o.basis == "consensus":
+        bits.append(f"پیش‌بینی تحلیلگران {fval(o.key, o.forecast)}")
+    if o.nowcast is not None and o.nowcast_source:
+        bits.append(f"{ol.SOURCE_FA[o.nowcast_source]} {fval(o.key, o.nowcast)}")
+    if o.previous is not None:
+        bits.append(f"قبلی {fval(o.key, o.previous)}")
+    out = [" · ".join(bits)] if bits else []
+    for k in sorted(o.markets, key=lambda k: k != o.key):
+        m = market_line(f, k, o.markets[k])
+        if m:
+            out.append(m)
+    return out or ["پیش‌بینی منتشرشده‌ای هنوز در دسترس نیست"]
+
+
 def event_line(f: Facts, o: ol.EventOutlook, now: pd.Timestamp, skip_impact: bool = False) -> str:
-    """When the release is due, what the market already prices (FOMC only) and its measured impact. No forecast numbers."""
+    """When the release is due, its published forecasts, its measured impact and the live front-running read."""
     k = impact_key(o)
-    head = odds_phrase(o) if o.fedwatch else "موعد انتشار"
-    lines = [f"• <b>{name_of(o.key, o.release_id, o.name_fa)}</b> {when_fa(o.when)}" + (f": {head}" if o.fedwatch else "")]
+    lines = [f"• <b>{name_of(o.key, o.release_id, o.name_fa)}</b> {when_fa(o.when)}",
+             *[f"   ↳ {x}" for x in forecast_phrase(f, o)]]
     for c in (() if skip_impact else (shock_clause(f, k, short=True), direction_clause(f, k))):
         if c:
             lines.append(f"   ↳ {c}")
@@ -318,7 +373,7 @@ def ahead_section(f: Facts, now: pd.Timestamp, outs: list[ol.EventOutlook], key:
     imp = [o for o in outs if o.importance >= 4][:EVENT_LINES]
     if not imp:
         return "📅 <b>پیش رو</b>\nانتشار مهمی در ۷ روز آینده نیست."
-    return "\n".join(["📅 <b>پیش رو</b>", *[event_line(f, o, now, skip_impact=o is key) for o in imp]])
+    return "\n\n".join(["📅 <b>پیش رو</b>", *[event_line(f, o, now, skip_impact=o is key) for o in imp]])
 
 
 def key_event(f: Facts, outs: list[ol.EventOutlook]) -> ol.EventOutlook | None:
@@ -340,44 +395,27 @@ def regime_of(f: Facts, asset: str) -> dict | None:
 
 def decision_line(v: dict, asset: str, reg: dict | None = None) -> str:
     """The action from the long-horizon trend filter and volatility-scaled size (models.trend_regime); the invalidation is
-    the 200-day average. Without it (data missing) the old short-term lean is not shown as a decision."""
+    the 200-day average. Without it (data missing) no decision is offered."""
     if not reg:
-        return f"• {ASSET_FA[asset]}: داده‌ی روند بلندمدت در دسترس نیست؛ تصمیمی پیشنهاد نمی‌شود"
+        return f"• <b>{ASSET_FA[asset]}</b>: داده‌ی روند بلندمدت در دسترس نیست؛ تصمیمی پیشنهاد نمی‌شود."
     st = reg["state"]
     sma = adv.px(st["sma200"], asset)
     days = f"، {fa_digits(st['days_in_state'])} روز است" if st.get("days_in_state") else ""
+    ctx = []
+    if st.get("mom12m_pct") is not None:
+        ctx.append(f"بازده ۱۲ ماه گذشته {adv.pct(st['mom12m_pct'])}")
+    if st.get("vol60_pct") is not None:
+        ctx.append(f"نوسان سالانه {pnum(st['vol60_pct'], 0)}٪")
+    ctx_s = f"\n   ↳ {'، '.join(ctx)}." if ctx else ""
     if st["up"]:
-        return (f"• {ASSET_FA[asset]}: روند بلندمدت صعودی (قیمت {pnum(st['dist_pct'], 1)}٪ بالای میانگین ۲۰۰ روزه{days}) — "
-                f"سهم مجاز تا {adv.prob(st['exposure'])} از پولی که برای این دارایی کنار گذاشته‌ای؛ خروج با بسته شدن روزانه زیر {sma}")
-    return (f"• {ASSET_FA[asset]}: روند بلندمدت نزولی (قیمت {pnum(st['dist_pct'], 1)}٪ زیر میانگین ۲۰۰ روزه{days}) — "
-            f"سهم مجاز صفر؛ ورود فقط با بسته شدن روزانه بالای {sma}")
-
-
-def basis_block(f: Facts) -> str | None:
-    """Where the decision rule comes from and how it performed on our own history, in numbers."""
-    L = ["📐 <b>مبنای تصمیم</b>",
-         "قاعده‌ی روند بلندمدت: خرید فقط بالای میانگین ۲۰۰ روزه، حجم بر اساس نوسان ۶۰ روزه (هدف نوسان سالانه ۲۰٪). "
-         "این قاعده را فابر (۲۰۰۷) و موسکوویتز و همکاران (۲۰۱۲) معرفی کرده‌اند و جهت هفته‌ی بعد را پیش‌بینی نمی‌کند؛ فقط ریسک را کنترل می‌کند."]
-    for a in ("BTC", "Gold"):
-        r = (regime_of(f, a) or {}).get("record") or {}
-        w = r.get("5y") or r.get("full")
-        full = r.get("full")
-        if not (w and full):
-            continue
-        bits = []
-        for lab, x in (("از " + fa_digits(full["start"][:4]), full), ("۵ سال اخیر", w)):
-            ru, ho = x["rule"], x["hold"]
-            bits.append(f"{lab}: بدترین افت {pnum(ru['max_drawdown'], 0)}٪ (نگه‌داشتن ساده {pnum(ho['max_drawdown'], 0)}٪)، "
-                        f"بازده به ریسک {pnum(ru['sharpe'], 2)} (ساده {pnum(ho['sharpe'], 2)})")
-        verdict = ("بازده به ریسک را بهتر کرده" if full["rule"]["sharpe"] > full["hold"]["sharpe"]
-                   else "بازده به ریسک را در کل تاریخچه بهتر نکرده")
-        L.append(f"• {ASSET_FA[a]} ({verdict}): " + "؛ ".join(bits))
-    rng = [(a, (((f.track or {}).get("assets") or {}).get(a) or {}).get("range") or {}) for a in ("BTC", "Gold")]
-    rng = [(a, r["coverage_after"]) for a, r in rng if r.get("coverage_after") is not None]
-    if rng:
-        L.append("• احتمال‌های ۴ هفته فقط از نوسان ۹۰ روز اخیر ساخته شده‌اند (توزیع لگ‌نرمال، بدون هیچ پیش‌بینی). در ۳ سال گذشته بازه‌ی ±۱σ آن‌ها "
-                 + " و ".join(f"برای {ASSET_FA[a]} {adv.prob(c)}" for a, c in rng) + " از نتیجه‌ها را در خود داشته (انتظار نظری ۶۸٪).")
-    return "\n".join(L) if len(L) > 2 else None
+        return (f"• <b>{ASSET_FA[asset]}</b>: روند بلندمدت صعودی است.\n"
+                f"   ↳ قیمت {pnum(st['dist_pct'], 1)}٪ بالای میانگین ۲۰۰ روزه{days}.\n"
+                f"   ↳ سهم مجاز تا {adv.prob(st['exposure'])} از پولی که برای این دارایی کنار گذاشته‌ای.\n"
+                f"   ↳ خروج با بسته شدن روزانه زیر {sma}.{ctx_s}")
+    return (f"• <b>{ASSET_FA[asset]}</b>: روند بلندمدت نزولی است.\n"
+            f"   ↳ قیمت {pnum(abs(st['dist_pct']), 1)}٪ زیر میانگین ۲۰۰ روزه{days}.\n"
+            f"   ↳ فعلاً خرید نکن؛ سهم مجاز صفر.\n"
+            f"   ↳ ورود فقط با بسته شدن روزانه بالای {sma}.{ctx_s}")
 
 
 def asset_sentences(v: dict) -> str:
@@ -405,16 +443,16 @@ def asset_sentences(v: dict) -> str:
              f"نوسان عادی ±{pnum(sg, 1)}٪)")
     else:
         b = ""  # macro without weight is left out: it changes no decision
-    return f"وضع کوتاه‌مدت (فقط توصیف، نه پیش‌بینی): {a}.\n{b}." if b else f"وضع کوتاه‌مدت (فقط توصیف، نه پیش‌بینی): {a}."
+    return f"کوتاه‌مدت: {a}.\n{b}." if b else f"کوتاه‌مدت: {a}."
 
 
 def levels_line(v: dict, asset: str) -> str:
     s = adv.px(v["s"], asset) + (f" ({v['s_how']})" if v.get("s_how") else "")
     r = adv.px(v["r"], asset) + (f" ({v['r_how']})" if v.get("r_how") else "")
-    out = f"سطح‌ها: حمایت {s} · مقاومت {r}"
+    out = f"حمایت {s} · مقاومت {r}"
     sc = adv.scenarios(v["price"], v["r"], v["s"], 0.0, v["sg"]) if v.get("sg") and v.get("price") else None  # no macro drift
     if sc:
-        out += f"\nتا ۴ هفته‌ی دیگر: بالای مقاومت رفتن {adv.prob(sc['up'])}، زیر حمایت رفتن {adv.prob(sc['down'])}"
+        out += f"\nشانس تا ۴ هفته (از نوسان ۹۰ روزه): بالای مقاومت {adv.prob(sc['up'])}، زیر حمایت {adv.prob(sc['down'])}"
     return out
 
 
@@ -423,7 +461,8 @@ def asset_section(v: dict, asset: str, read: str) -> str:
     head = f"{ICON[asset]} <b>{v['name']}</b> {adv.px(v['price'], asset)} دلار"
     if mv.get("chg24") is not None:
         head += f" (۲۴ ساعت {adv.pct(mv['chg24'])} / ۷ روز {adv.pct(mv.get('chg7d'))})"
-    return "\n".join([head, read, levels_line(v, asset)])
+    body = [ln for ln in (read + "\n" + levels_line(v, asset)).split("\n") if ln.strip()]
+    return "\n".join([head, *[f"   ↳ {ln}" for ln in body]])
 
 
 # ───────────────────────────── post-release ─────────────────────────────
@@ -575,22 +614,22 @@ def build(f: Facts, now: pd.Timestamp, changes: list[str] | None = None, trigger
         clause = shock_clause(f, impact_key(ke), short=True)
         dirc = direction_clause(f, impact_key(ke)) or fade_clause(f, impact_key(ke))
         bits = "، ".join(x for x in (clause, dirc) if x)
-        dec.append(f"• رویداد کلیدی: {name_of(ke.key, ke.release_id, ke.name_fa)} {when_fa(ke.when)}"
-                   + (f" — {bits}" if bits else ""))
-    sections.append("\n".join(dec))
+        dec.append(f"• <b>رویداد کلیدی</b>: {name_of(ke.key, ke.release_id, ke.name_fa)} {when_fa(ke.when)}"
+                   + (f"\n   ↳ {bits}." if bits else ""))
+    sections.append("\n\n".join(dec))
     fs = facts_section(f, now, outs)
     ahead = ahead_section(f, now, outs, ke)
     assets = [asset_section(v, a, polish(asset_sentences(v)) if rewrite else asset_sentences(v)) for a, v in views.items()]
     tail = DISCLAIMER
-    body = [fs, ahead, *assets, basis_block(f), tail]
-    # keep a normal day to one short message: drop the oldest fact lines first, then the third event line
+    body = [fs, ahead, *assets, tail]
+    # keep a normal day to one short message: drop the oldest fact items first, then the second event
     msg = "\n\n".join(x for x in sections + body if x)
-    while not post and len(msg) > TARGET_CHARS and fs and fs.count("\n") > 1:
-        fs = fs.rsplit("\n", 1)[0]
+    while not post and len(msg) > TARGET_CHARS and fs and fs.count("\n\n") > 1:
+        fs = fs.rsplit("\n\n", 1)[0]
         body[0] = fs
         msg = "\n\n".join(x for x in sections + body if x)
-    while not post and len(msg) > TARGET_CHARS and ahead.count("\n") > 1:
-        ahead = ahead.rsplit("\n", 1)[0]
+    while not post and len(msg) > TARGET_CHARS and ahead.count("\n\n") > 1:
+        ahead = ahead.rsplit("\n\n", 1)[0]
         body[1] = ahead
         msg = "\n\n".join(x for x in sections + body if x)
     return split(sections + [x for x in body if x])

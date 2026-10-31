@@ -79,12 +79,16 @@ def test_one_short_message_decision_first(root_impact):
     msgs = daily.build(facts_mod.load(root_impact), NOW)
     assert len(msgs) == 1 and len(msgs[0]) <= daily.TARGET_CHARS
     t = _plain(msgs[0])
-    heads = ["گزارش روزانه", "تصمیم امروز", "پیش رو", "₿ بیت‌کوین", "سطح‌ها", "🥇 طلا", "مبنای تصمیم", "توصیه مالی"]
+    heads = ["گزارش روزانه", "تصمیم امروز", "پیش رو", "₿ بیت‌کوین", "حمایت", "🥇 طلا", "توصیه مالی"]
     pos = [t.find(h) for h in heads]
     assert all(p >= 0 for p in pos) and pos == sorted(pos), dict(zip(heads, pos))
-    first = [x for x in t.splitlines() if x.strip()][:6]  # the decision fits in the first 6 lines
-    assert first[1].startswith("🎯 تصمیم امروز") and first[2].startswith("• بیت‌کوین:") and first[3].startswith("• طلا:")
-    assert first[4].startswith("• رویداد کلیدی:") and "خروج با بسته شدن روزانه زیر" in first[2] and "سهم مجاز صفر" in first[3]
+    assert "مبنای تصمیم" not in t
+    lines = [x for x in t.splitlines() if x.strip()]
+    assert lines[1].startswith("🎯 تصمیم امروز") and lines[2].startswith("• بیت‌کوین:")
+    assert "\n\n• طلا:" in t and "\n\n• رویداد کلیدی:" in t  # items are spaced apart
+    btc = t[t.index("• بیت‌کوین:"):t.index("• طلا:")]
+    gold = t[t.index("• طلا:"):t.index("• رویداد کلیدی:")]
+    assert "خروج با بسته شدن روزانه زیر" in btc and "سهم مجاز صفر" in gold
     assert t.count("توصیه مالی") == 1 and t.count("گزارش روزانه") == 1
     assert "<pre>" not in msgs[0]  # no tables in the daily report
 
@@ -103,21 +107,29 @@ def test_measured_impact_replaces_strength_words_and_each_fact_appears_once(root
     f = facts_mod.load(root_impact)
     t = _plain(daily.build(f, NOW)[0])
     assert "ضعیف" not in t and "متوسط" not in t
-    key_line = next(x for x in t.splitlines() if x.startswith("• رویداد کلیدی"))
+    key_line = t[t.index("• رویداد کلیدی"):].split("\n\n")[0]
     assert "0.56" in key_line and "2.0 و 1.8 برابر یک ساعت عادی" in key_line and "جهت قابل پیش‌بینی نیست" in key_line
     assert t.count("0.56") == 1  # the key event's shock is not repeated in the 📅 section
     assert t.count("ثابت ماندن") <= 1  # the FOMC odds appear once at most
 
 
-def test_forecast_numbers_are_kept_out_of_the_daily_report(root_impact):
+def test_published_forecasts_are_shown_and_the_system_guess_is_not(root_impact):
     pd.DataFrame([{"event_id": "cpi-20261002", "release_id": "cpi", "key": "cpi", "scheduled_utc": "2026-10-02T12:00:00+00:00",
                    "consensus": 0.3, "previous": 0.4, "consensus_source": "forexfactory", "nowcast": 0.45,
                    "nowcast_source": "cleveland", "nowcast_as_of": "2026-09-28", "market_points": None,
                    "market_source": None, "market_ticker": None}]).to_csv(root_impact / "cache" / "forecasts.csv", index=False)
     f = facts_mod.load(root_impact)
     t = _plain(daily.build(f, NOW)[0])
-    for word in ("پیش‌بینی 0", "انتظار سیستم", "اجماع", "نوکست", "احتمال داغ‌تر", "سردتر از پیش‌بینی", "0.30"):
-        assert word not in t, word
+    assert "پیش‌بینی تحلیلگران 0.30" in t and "نوکست فد کلیولند 0.45" in t
+    assert "انتظار سیستم" not in t
+
+
+def test_market_line_reads_the_kalshi_median():
+    from models import forecast as fm
+
+    pts = [(4.0, 0.9), (4.1, 0.6), (4.2, 0.28), (4.3, 0.05)]
+    assert fm.market_median(pts) == (4.1, 4.2)
+    assert fm.market_median([(0, 0.4), (1, 0.2)]) is None
 
 
 def test_fomc_keeps_the_market_priced_odds_only(root):
@@ -236,21 +248,19 @@ def test_a_rewrite_with_an_invented_number_never_reaches_the_report(root, monkey
 def test_decision_comes_from_the_trend_filter_with_its_numbers(root_impact):
     f = facts_mod.load(root_impact)
     t = _plain("\n".join(daily.build(f, NOW)))
-    btc = next(x for x in t.splitlines() if x.startswith("• بیت‌کوین:"))
-    gold = next(x for x in t.splitlines() if x.startswith("• طلا:"))
+    btc = t[t.index("• بیت‌کوین:"):].split("\n\n")[0]
+    gold = t[t.index("• طلا:"):].split("\n\n")[0]
     assert "بالای میانگین ۲۰۰ روزه" in btc and "سهم مجاز تا ۵۵٪" in btc and "زیر 74,000" in btc
     assert "زیر میانگین ۲۰۰ روزه" in gold and "سهم مجاز صفر" in gold and "بالای 4,500" in gold
-    basis = t[t.index("مبنای تصمیم"):]
-    assert "فابر" in basis and "جهت هفته‌ی بعد را پیش‌بینی نمی‌کند" in basis
-    assert "بازده به ریسک را بهتر کرده" in basis and "بازده به ریسک را در کل تاریخچه بهتر نکرده" in basis
-    assert "بدترین افت 25٪ (نگه‌داشتن ساده 83٪)" in basis
+    assert "مبنای تصمیم" not in t
     f.regime = {}
     t2 = _plain("\n".join(daily.build(f, NOW)))
-    assert "تصمیمی پیشنهاد نمی‌شود" in t2 and "مبنای تصمیم" not in t2
+    assert "تصمیمی پیشنهاد نمی‌شود" in t2
 
 
-def test_numbers_section_has_no_forecast_comparison(root_impact):
+def test_numbers_section_compares_with_the_consensus_only(root_impact):
     f = facts_mod.load(root_impact)
     f.surprises = {"core_cpi": {**next(iter(f.surprises.values())), "release_utc": NOW.isoformat()}}
     sec = _plain(daily.facts_section(f, NOW, []))
-    assert "بدون پیش‌بینی" in sec and "قبلی" in sec and "انتظار" not in sec
+    assert "قبلی" in sec and "انتظار" not in sec
+    assert ("پیش‌بینی" in sec) == (f.surprises["core_cpi"].get("basis") == "vs consensus")

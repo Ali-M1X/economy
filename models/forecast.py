@@ -119,3 +119,13 @@ def event_odds(forecast: float | None, sigma: float | None, nowcast: float | Non
     if nowcast is not None and np.isfinite(nowcast):
         return normal_odds(nowcast, forecast, sigma, "nowcast")
     return even_odds(sigma)
+
+
+def market_median(points: list[tuple[float, float]]) -> tuple[float, float] | None:
+    """The interval (lower strike, upper strike] that holds the market's median, from cleaned survival points:
+    the last strike still priced at ≥ 50 % and the first one below 50 %."""
+    pts = clean_survival(points)
+    for (s0, p0), (s1, p1) in zip(pts, pts[1:]):
+        if p0 >= 0.5 > p1:
+            return s0, s1
+    return None

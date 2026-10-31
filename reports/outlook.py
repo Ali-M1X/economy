@@ -45,6 +45,7 @@ class EventOutlook:
     odds: fm.Odds | None = None
     effects: dict = field(default_factory=dict)  # asset → {beta, sd, conflict, conf}
     fedwatch: dict | None = None
+    markets: dict = field(default_factory=dict)  # series key → cleaned Kalshi survival points [(strike, P(actual > strike))]
 
     @property
     def sources(self) -> list[str]:
@@ -155,6 +156,12 @@ def event_outlook(f: Facts, e) -> EventOutlook:
             pts = [tuple(p) for p in json.loads(r["market_points"])]
         except (ValueError, TypeError):
             pts = None
+    for _, rr in (rows.iterrows() if not rows.empty else ()):
+        if isinstance(rr.get("market_points"), str) and rr.get("key"):
+            try:
+                o.markets[rr["key"]] = fm.clean_survival([tuple(p) for p in json.loads(rr["market_points"])])
+            except (ValueError, TypeError):
+                pass
     o.sigma = surprise_scale(f, o.key)
     o.odds = fm.event_odds(o.forecast, o.sigma, nowcast=o.nowcast, market=pts)
     o.market = bool(o.odds and o.odds.method == "market")
