@@ -34,11 +34,26 @@ def _impact(pre_median: float = 0.5) -> dict:
     return {"releases": {k: {"release_id": k, "assets": {"BTC": m, "Gold": g}} for k in ("cpi", "core_cpi", "fomc")}}
 
 
+def _regime():
+    rec = {"full": {"rule": {"cagr": 25.3, "sharpe": 1.36, "max_drawdown": -24.8},
+                    "hold": {"cagr": 52.6, "sharpe": 0.97, "max_drawdown": -83.4}, "start": "2014-09-18"},
+           "5y": {"rule": {"cagr": 10.7, "sharpe": 0.73, "max_drawdown": -14.3},
+                  "hold": {"cagr": 4.7, "sharpe": 0.34, "max_drawdown": -76.6}, "start": "2021-11-01"}}
+    gold = {"full": {"rule": {"cagr": 7.8, "sharpe": 0.61, "max_drawdown": -39.3},
+                     "hold": {"cagr": 10.7, "sharpe": 0.66, "max_drawdown": -44.4}, "start": "2000-08-31"}}
+    up = {"price": 82000.0, "sma200": 74000.0, "dist_pct": 10.8, "up": True, "days_in_state": 73, "mom12m_pct": 5.0,
+          "vol60_pct": 36.0, "exposure": 0.55}
+    dn = {"price": 3900.0, "sma200": 4500.0, "dist_pct": -13.3, "up": False, "days_in_state": 56, "mom12m_pct": -2.5,
+          "vol60_pct": 20.0, "exposure": 0.0}
+    return {"assets": {"BTC": {"state": up, "record": rec}, "Gold": {"state": dn, "record": gold}}}
+
+
 @pytest.fixture
 def root_impact(root, tmp_path):
     r = tmp_path / "output"
     shutil.copytree(root, r)
     (r / "release_impact.json").write_text(json.dumps(_impact()), encoding="utf-8")
+    (r / "trend_regime.json").write_text(json.dumps(_regime()), encoding="utf-8")
     return r
 
 
@@ -64,12 +79,12 @@ def test_one_short_message_decision_first(root_impact):
     msgs = daily.build(facts_mod.load(root_impact), NOW)
     assert len(msgs) == 1 and len(msgs[0]) <= daily.TARGET_CHARS
     t = _plain(msgs[0])
-    heads = ["گزارش روزانه", "تصمیم امروز", "پیش رو", "₿ بیت‌کوین", "سطح‌ها", "🥇 طلا", "توصیه مالی"]
+    heads = ["گزارش روزانه", "تصمیم امروز", "پیش رو", "₿ بیت‌کوین", "سطح‌ها", "🥇 طلا", "مبنای تصمیم", "توصیه مالی"]
     pos = [t.find(h) for h in heads]
     assert all(p >= 0 for p in pos) and pos == sorted(pos), dict(zip(heads, pos))
     first = [x for x in t.splitlines() if x.strip()][:6]  # the decision fits in the first 6 lines
     assert first[1].startswith("🎯 تصمیم امروز") and first[2].startswith("• بیت‌کوین:") and first[3].startswith("• طلا:")
-    assert first[4].startswith("• رویداد کلیدی:") and "ابطال" in first[2] and "ابطال" in first[3]
+    assert first[4].startswith("• رویداد کلیدی:") and "خروج با بسته شدن روزانه زیر" in first[2] and "سهم مجاز صفر" in first[3]
     assert t.count("توصیه مالی") == 1 and t.count("گزارش روزانه") == 1
     assert "<pre>" not in msgs[0]  # no tables in the daily report
 
@@ -94,46 +109,33 @@ def test_measured_impact_replaces_strength_words_and_each_fact_appears_once(root
     assert t.count("ثابت ماندن") <= 1  # the FOMC odds appear once at most
 
 
-def test_forecasts_from_the_file_show_source_and_odds(root_impact):
+def test_forecast_numbers_are_kept_out_of_the_daily_report(root_impact):
     pd.DataFrame([{"event_id": "cpi-20261002", "release_id": "cpi", "key": "cpi", "scheduled_utc": "2026-10-02T12:00:00+00:00",
                    "consensus": 0.3, "previous": 0.4, "consensus_source": "forexfactory", "nowcast": 0.45,
                    "nowcast_source": "cleveland", "nowcast_as_of": "2026-09-28", "market_points": None,
                    "market_source": None, "market_ticker": None}]).to_csv(root_impact / "cache" / "forecasts.csv", index=False)
     f = facts_mod.load(root_impact)
-    o = next(o for o in outlook.upcoming(f, NOW) if o.release_id == "cpi")
-    assert o.key == "cpi" and o.basis == "consensus" and o.forecast == 0.3 and o.odds.method == "nowcast"
-    assert o.odds.hot > o.odds.cool  # the nowcast is above the consensus
     t = _plain(daily.build(f, NOW)[0])
-    line = next(x for x in t.splitlines() if "تورم مصرف‌کننده (CPI)" in x and "پیش‌بینی 0.30" in x)
-    assert "اجماع، نوکست کلیولند" in line and "احتمال داغ‌تر از پیش‌بینی" in line
-    # the heads-up keeps naming the consensus
-    from types import SimpleNamespace
-    lines = messages.forecast_lines(f, SimpleNamespace(event_id="cpi-20261002", release_id="cpi", importance=5,
-                                                       scheduled_utc=pd.Timestamp("2026-10-02 12:00", tz="UTC")))
-    assert "اجماع" in _plain(lines[0]) and "0.30" in _plain(lines[0])
+    for word in ("پیش‌بینی 0", "انتظار سیستم", "اجماع", "نوکست", "احتمال داغ‌تر", "سردتر از پیش‌بینی", "0.30"):
+        assert word not in t, word
 
 
-def test_fomc_uses_fedwatch_and_releases_get_even_odds_without_a_forecast_edge(root):
+def test_fomc_keeps_the_market_priced_odds_only(root):
     f = facts_mod.load(root)
     outs = {o.release_id: o for o in outlook.upcoming(f, NOW, days=10)}  # the demo FOMC is 9 days out
     assert outs["fomc"].fedwatch and outs["fomc"].odds.cool == pytest.approx(0.7)
-    cpi = outs["cpi"]
-    assert cpi.basis == "system" and (cpi.odds is None or cpi.odds.method == "even")
     t = _plain(daily.build(f, NOW)[0])
-    assert "انتظار سیستم" in t
-    from models import forecast as fm
-    even = outlook.EventOutlook("e", "ppi", "PPI", 4, NOW, key="ppi_final_demand", forecast=0.2, odds=fm.even_odds(0.1))
-    assert "سیستم برتری ندارد" in daily.odds_phrase(even)
+    assert "انتظار سیستم" not in t and "سیستم برتری ندارد" not in t
 
 
 def test_plain_numbers_annualised_in_code():
-    s = daily.meaning("cpi", 0.40, 0.25, 1.2)
+    s = daily.meaning("cpi", 0.40, 0.25)
     ann = ((1 + 0.40 / 100) ** 12 - 1) * 100
-    assert f"{ann:.1f}" in _plain(s) and "هدف ۲٪" in s and "کاهش نرخ دورتر" in s
-    assert "کاهش نرخ نزدیک‌تر" in daily.meaning("nonfarm_payrolls", 20, 120, -1.5)
-    assert "طبق انتظار" in daily.meaning("nonfarm_payrolls", 118, 120, -0.1)
+    assert f"{ann:.1f}" in _plain(s) and "هدف ۲٪" in s and "بالاتر از قبلی" in s
+    assert "پایین‌تر از قبلی" in daily.meaning("nonfarm_payrolls", 20, 120)
+    assert "برابر ماه قبل" in daily.meaning("unemployment_rate", 4.2, 4.2)
+    assert "کاهش نرخ" not in s and "انتظار" not in s  # no forecast-based reading
     assert "شغل ساخته شد" in daily.print_sentence("nonfarm_payrolls", 29.0, "2026-09-01")
-    assert "سپتامبر" in daily.print_sentence("cpi", 0.4, "2026-09-01")
 
 
 def test_missing_levels_fall_back_to_the_20_day_range_or_atr():
@@ -231,20 +233,24 @@ def test_a_rewrite_with_an_invented_number_never_reaches_the_report(root, monkey
     assert "12345" not in "".join(msgs) and "تصمیم امروز" in _plain(msgs[0])
 
 
-def test_decision_labels_a_lean_without_edge_and_the_track_line_says_so(root_impact):
+def test_decision_comes_from_the_trend_filter_with_its_numbers(root_impact):
     f = facts_mod.load(root_impact)
-    f.track = {"assets": {"BTC": {"hit": {"7d": {"n": 66, "hit": 0.515, "chance": 0.507, "p": 0.5, "edge": False}}},
-                          "Gold": {"hit": {"7d": {"n": 74, "hit": 0.676, "chance": 0.543, "p": 0.01, "edge": True}}}}}
     t = _plain("\n".join(daily.build(f, NOW)))
-    assert "تقریباً شانسی" in t and "بهتر از شانس" in t and "کارنامه‌ی جهت روند" in t
     btc = next(x for x in t.splitlines() if x.startswith("• بیت‌کوین:"))
     gold = next(x for x in t.splitlines() if x.startswith("• طلا:"))
-    assert ("اطمینان کم" in btc) and ("اطمینان کم" not in gold)
-    f.track = {}
-    assert "کارنامه‌ی جهت روند" not in _plain("\n".join(daily.build(f, NOW)))
+    assert "بالای میانگین ۲۰۰ روزه" in btc and "سهم مجاز تا ۵۵٪" in btc and "زیر 74,000" in btc
+    assert "زیر میانگین ۲۰۰ روزه" in gold and "سهم مجاز صفر" in gold and "بالای 4,500" in gold
+    basis = t[t.index("مبنای تصمیم"):]
+    assert "فابر" in basis and "جهت هفته‌ی بعد را پیش‌بینی نمی‌کند" in basis
+    assert "بازده به ریسک را بهتر کرده" in basis and "بازده به ریسک را در کل تاریخچه بهتر نکرده" in basis
+    assert "بدترین افت 25٪ (نگه‌داشتن ساده 83٪)" in basis
+    f.regime = {}
+    t2 = _plain("\n".join(daily.build(f, NOW)))
+    assert "تصمیمی پیشنهاد نمی‌شود" in t2 and "مبنای تصمیم" not in t2
 
 
-def test_in_line_prints_are_left_out_of_the_numbers_section(root_impact):
+def test_numbers_section_has_no_forecast_comparison(root_impact):
     f = facts_mod.load(root_impact)
-    f.surprises = {"core_cpi": {**next(iter(f.surprises.values())), "z": 0.1, "release_utc": NOW.isoformat()}}
-    assert daily.facts_section(f, NOW, []) is None
+    f.surprises = {"core_cpi": {**next(iter(f.surprises.values())), "release_utc": NOW.isoformat()}}
+    sec = _plain(daily.facts_section(f, NOW, []))
+    assert "بدون پیش‌بینی" in sec and "قبلی" in sec and "انتظار" not in sec

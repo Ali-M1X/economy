@@ -38,6 +38,7 @@ def steps(mode: str, events: str, trigger: str, out: Path, state: Path) -> list[
     s += [("features", py + ["jobs.features", "--from-cache", cache], True),
           ("impact", py + ["jobs.impact", "--from-cache", cache], True),
           ("signals", py + ["jobs.signals", "--from-cache", cache], True),
+          ("trend regime", py + ["jobs.trend_regime", "--from-cache", cache], False),
           ("track record", py + ["jobs.track_record", "--from-cache", cache], False),
           ("pre-positioning", py + ["jobs.prepos", "--from-cache", cache, "--archive", str(state.parent / "archive"),
                                     "--state", str(state)], False),

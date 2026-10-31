@@ -61,6 +61,7 @@ class Facts:
     surprises: dict = field(default_factory=dict)          # latest_surprises.json (last first-print surprise per release)
     forecasts: pd.DataFrame = field(default_factory=pd.DataFrame)  # cache/forecasts.csv (jobs.forecasts)
     impact: dict = field(default_factory=dict)             # release_impact.json (jobs.release_impact)
+    regime: dict = field(default_factory=dict)             # trend_regime.json (jobs.trend_regime)
     track: dict = field(default_factory=dict)              # track_record.json (jobs.track_record)
 
     # ── lookups ──
@@ -147,7 +148,7 @@ def load(root: Path) -> Facts:
     avail = rj("data_availability.json")
     f = Facts(root=root, as_of=avail.get("generated_at") or rj("features_state.json").get("as_of"),
               state=rj("features_state.json"), macro=rj("macro_scores.json"), signals=rj("signals.json"),
-              releases=rj("recent_releases.json") or [], prepos=rj("prepos.json"), surprises=rj("latest_surprises.json"), impact=rj("release_impact.json"), track=rj("track_record.json"),
+              releases=rj("recent_releases.json") or [], prepos=rj("prepos.json"), surprises=rj("latest_surprises.json"), impact=rj("release_impact.json"), track=rj("track_record.json"), regime=rj("trend_regime.json"),
               availability={r["key"]: r for r in avail.get("series", [])})
     if (root / "impact_coefficients.csv").exists():
         f.coefs = pd.read_csv(root / "impact_coefficients.csv")

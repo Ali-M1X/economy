@@ -106,6 +106,10 @@ jobs:
       - name: Phase 4 technicals & signals
         if: success() || failure()
         run: python -m jobs.signals --from-cache output/cache
+      - name: Long-horizon trend filter and its record
+        if: success() || failure()
+        continue-on-error: true  # the report then leaves the basis block out
+        run: python -m jobs.trend_regime --from-cache output/cache
       - name: Track record (does the trend call come true?)
         if: success() || failure()
         continue-on-error: true  # the report simply leaves the track-record line out
